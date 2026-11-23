@@ -20,7 +20,7 @@ RULE = {"ticker": "AAPL", "condition": "above", "threshold": 190}
 
 
 @pytest.fixture
-def app(stub, monkeypatch):
+def app(stub, monkeypatch, database_url):
     monkeypatch.setenv("WATCHLIST_URL", stub.url)
     monkeypatch.setenv("WATCHLIST_TIMEOUT_SECONDS", "0.3")
     return create_app(load_config())

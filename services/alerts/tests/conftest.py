@@ -1,17 +1,22 @@
 import json
+import os
 import threading
 import time
+from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
 import jwt
 import pytest
 
-from app import SCHEMA_FILES
-from app.db import init_db
+from app import MIGRATIONS
+from app.db import get_connection
+from app.migrations import apply_migrations
 
 # Not a real secret. It only signs tokens inside a test run.
 TEST_TOKEN_SECRET = "test-only-token-secret-not-a-real-one"
+# Emptied before every test that uses the database. Events first: they point at rules.
+TABLES = ["alert_events", "alert_rules"]
 
 ANSWER = {
     "owners": {"7": ["AAPL", "MSFT"], "8": ["TSLA"]},
@@ -20,17 +25,75 @@ ANSWER = {
 
 
 @pytest.fixture(autouse=True)
-def service_environment(tmp_path, monkeypatch):
-    """Every test gets its own data folder and a token secret."""
-    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+def service_environment(monkeypatch):
+    """Every test gets a token secret.
+
+    DATABASE_URL is unset, so a test that needs the database must ask for the
+    database_url fixture. It can never reach a real database by accident.
+    """
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.setenv("TOKEN_SECRET", TEST_TOKEN_SECRET)
 
 
+def empty_tables(url):
+    """Delete every row and start the IDs at 1 again."""
+    with closing(get_connection(url)) as conn:
+        cursor = conn.cursor()
+        for table in TABLES:
+            cursor.execute(f"DELETE FROM {table}")
+            # A table that never held a row is left alone: RESEED would make its first ID 0.
+            cursor.execute(
+                f"""IF EXISTS (SELECT 1 FROM sys.identity_columns
+                    WHERE object_id = OBJECT_ID('{table}') AND last_value IS NOT NULL)
+                    DBCC CHECKIDENT ('{table}', RESEED, 0) WITH NO_INFOMSGS"""
+            )
+        conn.commit()
+
+
 @pytest.fixture
-def db_path(tmp_path):
-    path = tmp_path / "data" / "alerts.db"
-    init_db(path, SCHEMA_FILES)
-    return path
+def database_url(monkeypatch):
+    """The test database with the migrations applied and every table empty.
+
+    It is also what load_config() reads, so the app in a test uses it too.
+    """
+    url = os.environ.get("TEST_DATABASE_URL")
+    if not url:
+        pytest.fail(
+            "This test needs SQL Server. Start the test database with "
+            "`sh db/test-db.sh up` and set TEST_DATABASE_URL to the output of "
+            "`sh db/test-db.sh url SERVICE`."
+        )
+    apply_migrations(url, MIGRATIONS)
+    empty_tables(url)
+    monkeypatch.setenv("DATABASE_URL", url)
+    return url
+
+
+def drop_every_table(url):
+    with closing(get_connection(url)) as conn:
+        cursor = conn.cursor()
+        # Foreign keys first, so the order of the tables does not matter.
+        cursor.execute(
+            "SELECT OBJECT_NAME(parent_object_id) AS table_name, name FROM sys.foreign_keys"
+        )
+        for key in cursor.fetchall():
+            cursor.execute(f"ALTER TABLE [{key['table_name']}] DROP CONSTRAINT [{key['name']}]")
+        cursor.execute("SELECT name FROM sys.tables")
+        for table in cursor.fetchall():
+            cursor.execute(f"DROP TABLE [{table['name']}]")
+        conn.commit()
+
+
+@pytest.fixture
+def empty_database(database_url):
+    """A database with no tables at all, for the tests of the migration runner.
+
+    The tables are dropped again afterwards, so the next test that asks for
+    database_url gets the real schema rebuilt from the real migrations.
+    """
+    drop_every_table(database_url)
+    yield database_url
+    drop_every_table(database_url)
 
 
 def user_headers(account_id, username="investor", secret=TEST_TOKEN_SECRET, lifetime=3600):

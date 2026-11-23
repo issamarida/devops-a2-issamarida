@@ -191,22 +191,22 @@ def test_both_calls_fail_when_the_watchlist_is_down():
 # service over real HTTP. Nothing is mocked from here on.
 
 
-def alerts_for(db_path, url, owner_id=7, timeout_seconds=2.0, tickers=()):
+def alerts_for(database_url, url, owner_id=7, timeout_seconds=2.0, tickers=()):
     """An AlertService wired the way create_app wires it for one request."""
     token = issue_service_token(TEST_TOKEN_SECRET)
     watchlist = RemoteWatchlist(
         Snapshot(lambda: fetch_snapshot(url, timeout_seconds, token, tickers)), owner_id
     )
-    return AlertService(AlertRepository(db_path, owner_id), watchlist, watchlist)
+    return AlertService(AlertRepository(database_url, owner_id), watchlist, watchlist)
 
 
-def test_a_rule_is_created_and_fires_across_the_seam(db_path, stub):
-    rule = alerts_for(db_path, stub.url).create_rule("aapl", "above", 190)
+def test_a_rule_is_created_and_fires_across_the_seam(database_url, stub):
+    rule = alerts_for(database_url, stub.url).create_rule("aapl", "above", 190)
     assert rule["status"] == "active"
     # The watched check and the status of the new rule share one request.
     assert stub.paths == ["/internal/snapshot"]
 
-    service = alerts_for(db_path, stub.url, tickers=["AAPL"])
+    service = alerts_for(database_url, stub.url, tickers=["AAPL"])
     fired = service.evaluate_all()
 
     assert [r["id"] for r in fired] == [rule["id"]]
@@ -216,29 +216,29 @@ def test_a_rule_is_created_and_fires_across_the_seam(db_path, stub):
     assert stub.asked == ["", "AAPL"]
 
 
-def test_the_stub_refuses_a_caller_without_the_service_token(db_path, stub):
+def test_the_stub_refuses_a_caller_without_the_service_token(database_url, stub):
     with pytest.raises(WatchlistUnavailable, match="401"):
         fetch_snapshot(stub.url, 2.0, "not-a-token")
 
 
-def test_a_change_in_the_watchlist_is_seen_on_the_next_request(db_path, stub):
-    alerts_for(db_path, stub.url).create_rule("AAPL", "above", 190)
+def test_a_change_in_the_watchlist_is_seen_on_the_next_request(database_url, stub):
+    alerts_for(database_url, stub.url).create_rule("AAPL", "above", 190)
 
     stub.answer = {"owners": {"7": []}, "prices": {}}
 
-    service = alerts_for(db_path, stub.url)
+    service = alerts_for(database_url, stub.url)
     assert service.list_rules()[0]["status"] == "dormant"
     assert service.evaluate_all() == []
 
 
-def test_a_ticker_watched_by_another_account_is_refused(db_path, stub):
+def test_a_ticker_watched_by_another_account_is_refused(database_url, stub):
     with pytest.raises(ValueError, match="isn't on the watchlist"):
-        alerts_for(db_path, stub.url, owner_id=7).create_rule("TSLA", "above", 100)
+        alerts_for(database_url, stub.url, owner_id=7).create_rule("TSLA", "above", 100)
 
 
-def test_a_ticker_without_a_price_keeps_its_rule_active(db_path, stub):
-    alerts_for(db_path, stub.url).create_rule("MSFT", "above", 1)
-    service = alerts_for(db_path, stub.url)
+def test_a_ticker_without_a_price_keeps_its_rule_active(database_url, stub):
+    alerts_for(database_url, stub.url).create_rule("MSFT", "above", 1)
+    service = alerts_for(database_url, stub.url)
 
     assert service.evaluate_all() == []
 
@@ -248,11 +248,11 @@ def test_a_ticker_without_a_price_keeps_its_rule_active(db_path, stub):
 
 @pytest.mark.parametrize("failure", ["stopped", "too slow"])
 def test_alerts_keeps_serving_its_own_data_without_the_watchlist(
-    db_path, stub, failure
+    database_url, stub, failure
 ):
-    alerts_for(db_path, stub.url).create_rule("AAPL", "above", 190)
-    alerts_for(db_path, stub.url).create_rule("AAPL", "above", 250)
-    alerts_for(db_path, stub.url).evaluate_all()
+    alerts_for(database_url, stub.url).create_rule("AAPL", "above", 190)
+    alerts_for(database_url, stub.url).create_rule("AAPL", "above", 250)
+    alerts_for(database_url, stub.url).evaluate_all()
 
     if failure == "stopped":
         stub.stop()
@@ -260,7 +260,7 @@ def test_alerts_keeps_serving_its_own_data_without_the_watchlist(
         stub.delay_seconds = 1.0
 
     def alerts():
-        return alerts_for(db_path, stub.url, timeout_seconds=0.2)
+        return alerts_for(database_url, stub.url, timeout_seconds=0.2)
 
     # Listing still works and comes back fast. The fired rule is our own data.
     started = time.monotonic()

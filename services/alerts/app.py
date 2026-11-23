@@ -8,6 +8,7 @@ from waitress import serve
 
 from app import create_app
 from app.config import RedactSecret, load_config, load_env_file
+from app.db import parse_database_url
 from app.poller import start_poller
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
@@ -15,9 +16,10 @@ logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 # Optional: a git-ignored .env next to this file. Real environment variables win.
 load_env_file(Path(__file__).parent / ".env")
 config = load_config()
-# Belt and braces: even a library log line can never print the secret.
+# Belt and braces: even a library log line can never print a secret.
 for handler in logging.getLogger().handlers:
     handler.addFilter(RedactSecret(config.token_secret))
+    handler.addFilter(RedactSecret(parse_database_url(config.database_url)["password"]))
 logging.info(
     "Alerts service %s starting on %s:%s, watchlist at %s",
     config.git_sha,

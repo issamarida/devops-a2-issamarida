@@ -47,8 +47,8 @@ def watchlist():
 
 
 @pytest.fixture
-def service(db_path, prices, watchlist):
-    return AlertService(AlertRepository(db_path), prices, watchlist)
+def service(database_url, prices, watchlist):
+    return AlertService(AlertRepository(database_url), prices, watchlist)
 
 
 def test_create_rule_cleans_ticker_and_returns_rule(service):
