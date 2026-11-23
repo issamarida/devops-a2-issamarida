@@ -9,7 +9,7 @@ Assignment 1 was one Flask process with one SQLite file. Assignment 2 splits it 
 | watchlist | `services/watchlist` | tracked assets, Finnhub prices, accounts and sign in | 8001 |
 | alerts | `services/alerts` | price rules, trigger history, the background check | 8002 |
 
-The alerts service calls the watchlist service over HTTP. The watchlist service never calls alerts. The static UI in `ui/` will call both from the browser.
+Each service has its own SQL Server database and its own login. The alerts service calls the watchlist service over HTTP. The watchlist service never calls alerts. The static UI in `ui/` will call both from the browser.
 
 ## Status
 
@@ -23,10 +23,11 @@ Assignment 2 is in progress. This table is kept honest against the brief.
 | 3 Partial failure handled in a designed way | Done in the API. The UI part is not built yet |
 | 3 `/health` with status, db and version, one log line per request | Done |
 | 1a CORS only from the UI's origin, in code | Done |
-| 5 CI: lint, tests and coverage per service | Done. Schema validation and image builds are not added yet |
-| 1a SQL Server and one database per service | Started. Compose starts SQL Server and `db/init.sql` creates the two databases and logins. The services still use their own SQLite file |
-| 4 Versioned migrations | Not yet |
-| 1a Dockerfiles and `docker compose up --build` | Started. `docker-compose.yml` starts the database side only. No Dockerfiles yet |
+| 5 CI: lint, tests and coverage per service, against a SQL Server container | Done. Schema validation and image builds are not added yet |
+| 1a SQL Server, one database and one login per service, `DATABASE_URL` | Done. SQLite is gone from the code |
+| 4 Versioned migrations, applied in order at startup and recorded | Done: `001_init.sql` in each service |
+| 4 A migration that changes a table holding data, with evidence on Azure | Not yet. It comes after the first deployment, because the database must hold data first |
+| 1a Dockerfiles and `docker compose up --build` | Started. `docker-compose.yml` starts the database only. No Dockerfiles yet, so the services run with `python app.py` |
 | 1a Static UI in `ui/` | Not yet. `ui/` still holds the Assignment 1 Jinja templates as the starting point |
 | 5 and 7 CD and the Azure deployment | Not yet |
 | 8a `openapi.yaml` per service and `system.yaml` | Not yet. `system.schema.json` is in place |
@@ -48,12 +49,22 @@ Both services need the same `TOKEN_SECRET`, at least 32 characters. It is a secr
 set -x TOKEN_SECRET (python -c "import secrets; print(secrets.token_urlsafe(48))")
 ```
 
-Then start each service from its own folder, in two terminals that share that variable:
+Start the database, then give each service its own connection string. The password is read from the volume where compose keeps it, so it never appears on screen or in a file:
 
 ```sh
-cd services/watchlist; python app.py
-cd services/alerts; env WATCHLIST_URL=http://localhost:8001 python app.py
+docker compose up -d
+set W (docker compose exec -T db cat /run/local-secrets/watchlist_password)
+set A (docker compose exec -T db cat /run/local-secrets/alerts_password)
 ```
+
+Then start each service from its own folder, in two terminals that share those variables:
+
+```sh
+cd services/watchlist; env DATABASE_URL="mssql+pymssql://watchlist_user:$W@localhost:1433/watchlist" python app.py
+cd services/alerts; env DATABASE_URL="mssql+pymssql://alerts_user:$A@localhost:1433/alerts" WATCHLIST_URL=http://localhost:8001 python app.py
+```
+
+Each service applies its new migrations when it starts and logs what it did, for example `Applied migration 001_init.sql` or `No new migration to apply`.
 
 To run a single service, start only that one. The watchlist service does not need alerts at all. The alerts service starts and serves its own data without the watchlist, as described under "When the watchlist is down".
 
@@ -61,7 +72,7 @@ Prices come from Finnhub. Set `PRICE_API_KEY` for the watchlist service to get t
 
 ## The local SQL Server
 
-`docker-compose.yml` starts one SQL Server container that holds one database per service. The services are not connected to it yet, so this part is the groundwork for the move away from SQLite.
+`docker-compose.yml` starts one SQL Server container that holds one database per service. Each service connects to its own database with its own login and never to the other one.
 
 ```sh
 docker compose up -d
@@ -78,6 +89,17 @@ sh db/check-logins.sh
 - `db/init.sql` checks before it creates, so running it again changes nothing.
 - `watchlist_user` has a user in the `watchlist` database only, and `alerts_user` in `alerts` only. `db/check-logins.sh` proves each login opens its own database and is refused on the other. CI runs it on every push.
 - `docker compose down -v` deletes both volumes, which deletes the data and the passwords. It is never needed to restart or rebuild.
+
+## Migrations
+
+The schema of each service is the list of numbered SQL files in `services/<name>/migrations`. There is no other place where a table is created.
+
+- A service applies the files it has not run yet, in number order, every time it starts. A second start applies nothing.
+- Each file runs in one transaction together with its row in the `schema_migrations` table. If a statement fails, SQL Server undoes the whole file, nothing is recorded and the service does not start.
+- `schema_migrations` also keeps a checksum of each file. If an applied file is edited later, the service refuses to start and says which file. A correction is always a new file.
+- If two copies of a service start at the same moment, a lock makes one wait. Each file still runs once.
+- A line that holds only `GO` splits a file into batches, as in `sqlcmd`. A statement that uses a new column must come after a `GO`.
+- To change the schema, add the next file, for example `002_add_something.sql`. Never edit or delete an old one, and never drop a table to rebuild it.
 
 ## API
 
@@ -138,6 +160,7 @@ The background check skips that run and logs one warning. Every rule stays activ
 - Every query uses the account ID from the token. An account ID sent in a request body is ignored.
 - `/internal/snapshot` only opens for a one-minute token with the `snapshot` scope, which the alerts service signs with the same secret.
 - Sign-in attempts and registrations are rate limited in the watchlist database, so the limits survive a restart.
+- Tickers and usernames are compared without case, because that is SQL Server's default. The services still store tickers in upper case and usernames in lower case.
 - Each service allows browser requests from the addresses in `CORS_ORIGINS` only.
 
 ## Configuration
@@ -150,7 +173,7 @@ Every setting is an environment variable. Each service also reads an optional gi
 |---|---|---|
 | `HOST` | `0.0.0.0` | Bind address |
 | `PORT` | `8001` | Port the service listens on |
-| `DATA_DIR` | `./data` | Folder for the SQLite file, until SQL Server replaces it |
+| `DATABASE_URL` | none, required | Connection string of the watchlist database. A secret, because it holds the password. `mssql+pymssql://user:password@host:port/database` |
 | `TOKEN_SECRET` | none, required | Secret that signs the tokens. The same value in both services |
 | `PRICE_API_KEY` | none | Finnhub key. A secret. Without it prices are unavailable |
 | `CORS_ORIGINS` | `http://localhost:8080` | The UI's address. A comma-separated list is allowed |
@@ -170,7 +193,7 @@ Every setting is an environment variable. Each service also reads an optional gi
 |---|---|---|
 | `HOST` | `0.0.0.0` | Bind address |
 | `PORT` | `8002` | Port the service listens on |
-| `DATA_DIR` | `./data` | Folder for the SQLite file, until SQL Server replaces it |
+| `DATABASE_URL` | none, required | Connection string of the alerts database. A secret, because it holds the password |
 | `TOKEN_SECRET` | none, required | The same secret as the watchlist service |
 | `WATCHLIST_URL` | `http://watchlist:8001` | Base address of the watchlist service |
 | `WATCHLIST_TIMEOUT_SECONDS` | `3` | Timeout for each call to the watchlist. At most 30 |
@@ -183,19 +206,23 @@ A wrong value stops the service at start with a message that names the variable.
 
 ## Tests
 
-Each service has its own tests and its own coverage gate. Run them from the service's folder:
+Each service has its own tests and its own coverage gate. The tests that touch the database run against a real SQL Server, as the service's own login, so they also prove that login has the rights it needs.
+
+They empty every table before each test, so they use a second copy of the compose database with its own containers, volumes and port. They can never delete the data in the database you work with. A test only reaches a database when `TEST_DATABASE_URL` is set.
 
 ```sh
-cd services/watchlist; pytest --cov
-cd services/alerts; pytest --cov
+sh db/test-db.sh up
+cd services/watchlist; env TEST_DATABASE_URL=(sh ../../db/test-db.sh url watchlist) pytest --cov
+cd services/alerts; env TEST_DATABASE_URL=(sh ../../db/test-db.sh url alerts) pytest --cov
 ruff check services
+sh db/test-db.sh down
 ```
 
-Verified on 20 November 2026: watchlist 222 tests and alerts 201 tests, both at 100% statement coverage of their measured modules. Coverage below 70% fails the run. As in Assignment 1 the thin route files and `create_app` are left out of the measure and are exercised through the API tests instead.
+Verified on 23 November 2026: watchlist 251 tests and alerts 229 tests, both at 100% statement coverage of their measured modules. Coverage below 70% fails the run. As in Assignment 1 the thin route files and `create_app` are left out of the measure and are exercised through the API tests instead.
 
 No test touches the internet. Finnhub is mocked. The cross-seam tests in `services/alerts/tests` replace the watchlist service with `StubWatchlist`, a real HTTP server on localhost that checks the service token as the real one does. The tests stop it, slow it down and make it answer nonsense to prove the answers in the table above.
 
-CI in `.github/workflows/ci.yml` runs the linter and both test suites on every push and pull request. A third job starts the compose database, runs `db/init.sql` twice and runs `db/check-logins.sh`.
+CI in `.github/workflows/ci.yml` runs the linter and both test suites on every push and pull request, against a SQL Server container it starts with `db/test-db.sh`. A third job starts the compose database, runs `db/init.sql` twice and runs `db/check-logins.sh`. CI never connects to Azure.
 
 ## Rules of the domain
 
