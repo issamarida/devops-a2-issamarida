@@ -1,18 +1,21 @@
 """Settings read from environment variables.
 
-Every setting has a default except the one secret: TOKEN_SECRET must be set.
+Every setting has a default except the two secrets: DATABASE_URL and
+TOKEN_SECRET must be set.
 """
 
 import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.db import parse_database_url
+
 
 @dataclass
 class Config:
     host: str
     port: int
-    data_dir: Path
+    database_url: str
     watchlist_url: str
     watchlist_timeout_seconds: float
     poll_interval_seconds: int
@@ -20,10 +23,6 @@ class Config:
     cors_origins: list[str]
     git_sha: str = "dev"
     max_alert_rules: int = 100
-
-    @property
-    def db_path(self) -> Path:
-        return self.data_dir / "alerts.db"
 
 
 def read_int(name: str, default: str) -> int:
@@ -65,6 +64,12 @@ def load_config() -> Config:
     if not 0 < watchlist_timeout_seconds <= 30:
         raise ValueError("WATCHLIST_TIMEOUT_SECONDS must be more than 0 and at most 30")
 
+    # A secret, because it holds the database password, so it has no default.
+    database_url = os.environ.get("DATABASE_URL", "").strip()
+    if not database_url:
+        raise ValueError("DATABASE_URL must be set")
+    parse_database_url(database_url)  # stops here, naming the variable, if it is malformed
+
     # A secret, so it has no default. Both services must be given the same value.
     token_secret = os.environ.get("TOKEN_SECRET", "")
     if len(token_secret) < 32:
@@ -84,7 +89,7 @@ def load_config() -> Config:
     return Config(
         host=os.environ.get("HOST", "0.0.0.0"),
         port=port,
-        data_dir=Path(os.environ.get("DATA_DIR", "./data")),
+        database_url=database_url,
         watchlist_url=watchlist_url,
         watchlist_timeout_seconds=watchlist_timeout_seconds,
         poll_interval_seconds=poll_interval_seconds,

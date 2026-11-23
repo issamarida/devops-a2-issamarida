@@ -71,8 +71,10 @@ def test_the_token_must_use_the_bearer_scheme(client, sign_up):
 def test_password_is_stored_as_a_hash(app, sign_up):
     sign_up("alice")
 
-    with closing(get_connection(app.extensions["access_store"].db_path)) as conn:
-        row = conn.execute("SELECT * FROM accounts").fetchone()
+    with closing(get_connection(app.extensions["access_store"].database_url)) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM accounts")
+        row = cursor.fetchone()
 
     assert PASSWORD not in row["password_hash"]
     assert row["password_hash"].startswith("scrypt:")
@@ -112,7 +114,7 @@ def test_login_rate_limit_survives_restart_and_ignores_forwarded_address(app, cl
     assert response.get_json() == {"error": "Too many attempts. Please wait and try again."}
     # The count is in the database, so a restart does not reset it.
     original = app.extensions["access_store"]
-    reopened = AccessStore(original.db_path)
+    reopened = AccessStore(original.database_url)
     assert reopened.consume("login-user:alice", 5, 900) > 0
     reopened.clock = lambda: original.clock() + 901
     assert reopened.consume("login-user:alice", 5, 900) == 0
@@ -164,6 +166,19 @@ def test_rate_limit_reservation_is_atomic(app):
     with ThreadPoolExecutor(max_workers=8) as pool:
         results = list(pool.map(lambda _: store.consume("concurrent", 3, 60), range(8)))
     assert results.count(0) == 3
+
+
+def test_attempts_for_different_keys_at_the_same_moment_never_fail(database_url):
+    # The first SQL Server version of consume() could deadlock here: one
+    # transaction cleared out old rows while it held a lock on its own key.
+    now = [1000.0]
+    store = AccessStore(database_url, clock=lambda: now[0])
+
+    for _ in range(5):
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            results = list(pool.map(lambda n: store.consume(f"key-{n % 4}", 100, 60), range(16)))
+        assert results == [0] * 16
+        now[0] += 61  # every window is over, so the next round also clears old rows
 
 
 def test_authenticated_write_rate_limit(app, client, sign_up):
@@ -264,7 +279,7 @@ def test_an_error_answer_still_carries_the_cors_header(client):
     assert response.headers["Access-Control-Allow-Origin"] == UI_ORIGIN
 
 
-def test_cors_origin_comes_from_the_environment(monkeypatch, prices):
+def test_cors_origin_comes_from_the_environment(monkeypatch, prices, database_url):
     from app import create_app
     from app.config import load_config
 

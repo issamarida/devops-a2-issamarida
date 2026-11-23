@@ -1,13 +1,13 @@
-from pathlib import Path
-
 import pytest
 
 from app.config import load_config
 
+# Never connected to. load_config only checks its shape.
+FAKE_DATABASE_URL = "mssql+pymssql://someone:not-a-password@db.example:1433/watchlist"
+
 VARIABLES = [
     "HOST",
     "PORT",
-    "DATA_DIR",
     "PRICE_API_KEY",
     "PRICE_CACHE_TTL_SECONDS",
     "CORS_ORIGINS",
@@ -24,9 +24,10 @@ VARIABLES = [
 
 @pytest.fixture(autouse=True)
 def clean_environment(monkeypatch):
-    """Start every test with none of the service's variables set, except the one secret it needs."""
+    """Start every test with none of the service's variables set, except the secrets it needs."""
     for name in VARIABLES:
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("DATABASE_URL", FAKE_DATABASE_URL)
 
 
 def test_defaults_when_nothing_is_set():
@@ -34,8 +35,7 @@ def test_defaults_when_nothing_is_set():
 
     assert config.host == "0.0.0.0"
     assert config.port == 8001
-    assert config.data_dir == Path("./data")
-    assert config.db_path == Path("./data") / "app.db"
+    assert config.database_url == FAKE_DATABASE_URL
     assert config.price_api_key is None
     assert config.live_symbol_limit == 50
     assert config.price_cache_ttl_seconds == 30
@@ -44,10 +44,9 @@ def test_defaults_when_nothing_is_set():
     assert config.git_sha == "dev"
 
 
-def test_environment_variables_override_the_defaults(monkeypatch, tmp_path):
+def test_environment_variables_override_the_defaults(monkeypatch):
     monkeypatch.setenv("HOST", "127.0.0.1")
     monkeypatch.setenv("PORT", "9000")
-    monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("PRICE_API_KEY", "fake-key-for-tests")
     monkeypatch.setenv("PRICE_CACHE_TTL_SECONDS", "10")
     monkeypatch.setenv("TOKEN_SECRET", "a-test-secret-that-is-at-least-32-characters")
@@ -58,8 +57,6 @@ def test_environment_variables_override_the_defaults(monkeypatch, tmp_path):
 
     assert config.host == "127.0.0.1"
     assert config.port == 9000
-    assert config.data_dir == tmp_path
-    assert config.db_path == tmp_path / "app.db"
     assert config.price_api_key == "fake-key-for-tests"
     assert config.price_cache_ttl_seconds == 10
     assert config.token_secret == "a-test-secret-that-is-at-least-32-characters"
@@ -144,3 +141,29 @@ def test_blank_git_sha_falls_back_to_dev(monkeypatch):
 def test_whitespace_api_key_is_unconfigured(monkeypatch):
     monkeypatch.setenv("PRICE_API_KEY", "   ")
     assert load_config().price_api_key is None
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "sqlite:///data/app.db",
+        "mssql+pymssql://db.example/watchlist",
+        "mssql+pymssql://someone:not-a-password@db.example",
+        "mssql+pymssql://someone:not-a-password@db.example:port/watchlist",
+    ],
+)
+def test_database_url_must_be_set_and_complete(monkeypatch, value):
+    monkeypatch.setenv("DATABASE_URL", value)
+
+    with pytest.raises(ValueError, match="DATABASE_URL"):
+        load_config()
+
+
+def test_a_bad_database_url_is_never_repeated_in_the_error(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgres://someone:not-a-password@db.example/watchlist")
+
+    with pytest.raises(ValueError) as error:
+        load_config()
+
+    assert "not-a-password" not in str(error.value)

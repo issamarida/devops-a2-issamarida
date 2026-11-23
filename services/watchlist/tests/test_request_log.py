@@ -85,7 +85,7 @@ def test_the_duration_covers_the_time_spent_in_the_route(caplog):
     assert 50 <= duration_ms < 1000
 
 
-def test_the_real_app_logs_requests_that_access_control_answers(caplog):
+def test_the_real_app_logs_requests_that_access_control_answers(caplog, database_url):
     # A request without a token never reaches a route. It still gets a line,
     # with the status the browser saw.
     client = create_app(load_config(), price_source=object()).test_client()

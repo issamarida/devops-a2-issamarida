@@ -1,6 +1,6 @@
 """Accounts and access control for the watchlist service. Not a business domain.
 
-SQLite holds the accounts and the fixed-window rate limits. Sign in answers
+The database holds the accounts and the fixed-window rate limits. Sign in answers
 with a signed token (app/tokens.py) and every later request carries it in the
 Authorization header. There are no cookies and no server-side sessions, so
 the alerts service can check the same token without calling this service.
@@ -10,39 +10,25 @@ import hashlib
 import math
 import re
 import secrets
-import sqlite3
 import time
 from contextlib import closing
 
 from flask import Blueprint, g, request
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from app.db import get_connection
+from app.db import IntegrityError, get_connection
 from app.tokens import is_service_token, issue_token, read_token
 
 USERNAME = re.compile(r"[a-z0-9_]{3,30}")
 
 
 class AccessStore:
-    def __init__(self, db_path, max_accounts=50, clock=time.time):
-        self.db_path = db_path
+    def __init__(self, database_url, max_accounts=50, clock=time.time):
+        self.database_url = database_url
         self.max_accounts = max_accounts
         self.clock = clock
         # Unknown usernames still perform the same password-hash work.
         self.dummy_hash = generate_password_hash(secrets.token_urlsafe(32))
-        with closing(get_connection(db_path)) as conn:
-            conn.executescript("""
-                CREATE TABLE IF NOT EXISTS accounts (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    username TEXT NOT NULL UNIQUE,
-                    password_hash TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS rate_limits (
-                    key TEXT PRIMARY KEY,
-                    attempts INTEGER NOT NULL,
-                    reset_at REAL NOT NULL
-                );
-            """)
 
     def register(self, username, password):
         username = username.strip().lower()
@@ -55,32 +41,37 @@ class AccessStore:
                 "Use a password of 15–128 characters. A memorable passphrase works well."
             )
         password_hash = generate_password_hash(password)
-        with closing(get_connection(self.db_path)) as conn, conn:
-            conn.execute("BEGIN IMMEDIATE")
-            if (
-                conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0]
-                >= self.max_accounts
-            ):
+        with closing(get_connection(self.database_url)) as conn:
+            cursor = conn.cursor()
+            # The two hints lock the table until commit, so two registrations
+            # at the same moment cannot both pass the limit.
+            cursor.execute("SELECT COUNT(*) AS total FROM accounts WITH (UPDLOCK, HOLDLOCK)")
+            if cursor.fetchone()["total"] >= self.max_accounts:
                 raise ValueError(
                     "Registration is unavailable. Please contact the app owner."
                 )
             try:
-                cursor = conn.execute(
-                    "INSERT INTO accounts (username, password_hash) VALUES (?, ?)",
+                cursor.execute(
+                    "INSERT INTO accounts (username, password_hash)"
+                    " OUTPUT INSERTED.id VALUES (%s, %s)",
                     (username, password_hash),
                 )
-            except sqlite3.IntegrityError:
+            except IntegrityError:
                 raise ValueError(
                     "Unable to create this account. Choose another username or sign in."
                 ) from None
-            return cursor.lastrowid
+            new_id = cursor.fetchone()["id"]
+            conn.commit()
+        return new_id
 
     def sign_in(self, username, password):
         """The account if the password is right, otherwise None."""
-        with closing(get_connection(self.db_path)) as conn:
-            user = conn.execute(
-                "SELECT * FROM accounts WHERE username = ?", (username.strip().lower(),)
-            ).fetchone()
+        with closing(get_connection(self.database_url)) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM accounts WHERE username = %s", (username.strip().lower(),)
+            )
+            user = cursor.fetchone()
         stored = user["password_hash"] if user else self.dummy_hash
         valid = check_password_hash(stored, password)
         if not user or not valid:
@@ -91,19 +82,34 @@ class AccessStore:
         """Atomically reserve an attempt. Return Retry-After seconds when blocked."""
         key = hashlib.sha256(key.encode()).hexdigest()
         now = self.clock()
-        with closing(get_connection(self.db_path)) as conn, conn:
-            conn.execute("BEGIN IMMEDIATE")
-            conn.execute("DELETE FROM rate_limits WHERE reset_at <= ?", (now,))
-            row = conn.execute(
-                "SELECT * FROM rate_limits WHERE key = ?", (key,)
-            ).fetchone()
-            if row and row["attempts"] >= limit:
-                return max(1, math.ceil(row["reset_at"] - now))
-            conn.execute(
-                """INSERT INTO rate_limits (key, attempts, reset_at) VALUES (?, 1, ?)
-                ON CONFLICT(key) DO UPDATE SET attempts = attempts + 1""",
-                (key, now + window),
+        with closing(get_connection(self.database_url)) as conn:
+            cursor = conn.cursor()
+            # Clear out the windows that are over, and save that first. From
+            # here on this attempt only locks its own key, so two attempts for
+            # different keys can never wait for each other.
+            cursor.execute("DELETE FROM rate_limits WHERE reset_at <= %s", (now,))
+            conn.commit()
+            # The two hints lock this key until commit, also when it has no row
+            # yet, so two attempts at the same moment are counted one by one.
+            cursor.execute(
+                "SELECT attempts, reset_at FROM rate_limits WITH (UPDLOCK, HOLDLOCK)"
+                " WHERE [key] = %s",
+                (key,),
             )
+            row = cursor.fetchone()
+            if row and row["attempts"] >= limit:
+                conn.commit()
+                return max(1, math.ceil(row["reset_at"] - now))
+            if row:
+                cursor.execute(
+                    "UPDATE rate_limits SET attempts = attempts + 1 WHERE [key] = %s", (key,)
+                )
+            else:
+                cursor.execute(
+                    "INSERT INTO rate_limits ([key], attempts, reset_at) VALUES (%s, 1, %s)",
+                    (key, now + window),
+                )
+            conn.commit()
         return 0
 
 
@@ -120,7 +126,7 @@ def text(body, name) -> str:
 
 
 def install_access(app, config):
-    store = AccessStore(config.db_path, config.max_accounts)
+    store = AccessStore(config.database_url, config.max_accounts)
     app.extensions["access_store"] = store
     # No request body here needs more than a few hundred bytes.
     app.config["MAX_CONTENT_LENGTH"] = 16384

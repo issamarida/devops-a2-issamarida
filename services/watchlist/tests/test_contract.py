@@ -3,7 +3,6 @@
 import json
 import os
 import socket
-import sqlite3
 import subprocess
 import sys
 import time
@@ -36,12 +35,10 @@ def get_status(url: str) -> int | None:
         return None
 
 
-def test_python_app_py_starts_and_reports_healthy(tmp_path):
+def test_python_app_py_starts_and_reports_healthy(tmp_path, database_url):
     port = free_port()
-    data_dir = tmp_path / "does" / "not" / "exist"
     env = dict(os.environ)
     env["PORT"] = str(port)
-    env["DATA_DIR"] = str(data_dir)
     env["PRICE_API_KEY"] = ""  # never use a real key from my shell
     env["GIT_SHA"] = "abc1234"
 
@@ -60,7 +57,6 @@ def test_python_app_py_starts_and_reports_healthy(tmp_path):
                 time.sleep(0.1)
 
             assert status == 200, log_path.read_text()
-            assert (data_dir / "app.db").is_file()
             with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=1) as response:
                 body = json.load(response)
             # Brief section 3: status, db and the version, which is the git SHA.
@@ -70,9 +66,8 @@ def test_python_app_py_starts_and_reports_healthy(tmp_path):
             process.wait(timeout=5)
 
 
-def test_python_app_py_refuses_to_start_without_the_token_secret(tmp_path):
+def test_python_app_py_refuses_to_start_without_the_token_secret(database_url):
     env = dict(os.environ)
-    env["DATA_DIR"] = str(tmp_path)
     env.pop("TOKEN_SECRET", None)
     # An empty value in the shell wins over any local .env file.
     env["TOKEN_SECRET"] = ""
@@ -85,21 +80,33 @@ def test_python_app_py_refuses_to_start_without_the_token_secret(tmp_path):
     assert "TOKEN_SECRET must be set" in result.stderr
 
 
-def test_health_returns_503_without_details_when_the_database_is_broken():
+def test_python_app_py_refuses_to_start_without_the_database_url():
+    env = dict(os.environ)
+    # An empty value in the shell wins over any local .env file.
+    env["DATABASE_URL"] = ""
+
+    result = subprocess.run(
+        [sys.executable, "app.py"], cwd=SERVICE_DIR, env=env, capture_output=True, text=True, timeout=20
+    )
+
+    assert result.returncode != 0
+    assert "DATABASE_URL must be set" in result.stderr
+
+
+def test_health_returns_503_without_details_when_the_database_is_unreachable(database_url):
     config = load_config()
     client = create_app(config).test_client()
     assert client.get("/health").get_json() == {"status": "ok", "db": "ok", "version": "dev"}
 
-    conn = sqlite3.connect(config.db_path)
-    conn.execute("DROP TABLE health_check")
-    conn.close()
+    # Nothing listens on port 1, so the next connection is refused at once.
+    config.database_url = "mssql+pymssql://someone:not-a-password@127.0.0.1:1/nowhere"
 
     response = client.get("/health")
     assert response.status_code == 503
     assert response.get_json() == {"status": "error", "db": "error", "version": "dev"}
 
 
-def test_health_needs_no_token_and_ignores_a_bad_one():
+def test_health_needs_no_token_and_ignores_a_bad_one(database_url):
     client = create_app(load_config()).test_client()
 
     assert client.get("/health", headers={"Authorization": "Bearer nonsense"}).status_code == 200

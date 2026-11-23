@@ -1,21 +1,21 @@
-import sqlite3
+from contextlib import closing
 
 import pytest
 
 from app.alerts.repository import AlertRepository
+from app.db import DatabaseError, get_connection
 
 
 @pytest.fixture
-def repo(db_path):
-    return AlertRepository(db_path)
+def repo(database_url):
+    return AlertRepository(database_url)
 
 
-def count_events(db_path):
-    conn = sqlite3.connect(db_path)
-    try:
-        return conn.execute("SELECT COUNT(*) FROM alert_events").fetchone()[0]
-    finally:
-        conn.close()
+def count_events(database_url):
+    with closing(get_connection(database_url)) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) AS total FROM alert_events")
+        return cursor.fetchone()["total"]
 
 
 def test_add_then_list(repo):
@@ -56,16 +56,16 @@ def test_second_fire_returns_false_and_adds_no_event(repo):
     assert len(repo.list_events()) == 1
 
 
-def test_fire_rule_rolls_back_when_insert_fails(repo, db_path):
+def test_fire_rule_rolls_back_when_insert_fails(repo, database_url):
     rule_id = repo.add_rule("AAPL", "above", 200.0)
     rule = repo.get_rule(rule_id)
     rule["ticker"] = None  # alert_events.ticker is NOT NULL, so the INSERT fails
 
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises(DatabaseError):
         repo.fire_rule(rule, 201.5)
 
     assert repo.get_rule(rule_id)["is_active"] == 1
-    assert count_events(db_path) == 0
+    assert count_events(database_url) == 0
 
 
 def test_delete_rule_keeps_event_with_null_rule_id(repo):
@@ -85,11 +85,12 @@ def test_delete_missing_rule_returns_false(repo):
     assert repo.delete_rule(999) is False
 
 
-def test_stale_rule_cannot_fire_a_replacement_with_reused_id(repo):
+def test_a_deleted_rule_cannot_fire_and_its_id_is_never_reused(repo):
     old = repo.get_rule(repo.add_rule("AAPL", "above", 100))
     repo.delete_rule(old["id"])
     replacement_id = repo.add_rule("MSFT", "below", 50)
-    assert replacement_id == old["id"]  # SQLite can reuse an INTEGER PRIMARY KEY.
+    # SQLite could hand the deleted rule's ID to the next rule. SQL Server never does.
+    assert replacement_id != old["id"]
     assert repo.fire_rule(old, 150) is False
     assert repo.get_rule(replacement_id)["is_active"] == 1
     assert repo.list_events() == []
@@ -112,9 +113,9 @@ def test_two_threads_fire_only_one_event(repo):
     assert len(repo.list_events()) == 1
 
 
-def test_owner_cannot_read_delete_or_fire_another_owners_rule(db_path):
-    alice = AlertRepository(db_path, 1)
-    bob = AlertRepository(db_path, 2)
+def test_owner_cannot_read_delete_or_fire_another_owners_rule(database_url):
+    alice = AlertRepository(database_url, 1)
+    bob = AlertRepository(database_url, 2)
     rule = alice.get_rule(alice.add_rule("AAPL", "above", 100))
     assert bob.get_rule(rule["id"]) is None
     assert bob.delete_rule(rule["id"]) is False
@@ -132,3 +133,27 @@ def test_history_page_is_bounded_but_full_history_is_retained(repo):
     assert len(repo.list_events()) == 100
     assert repo.count_events() == 105
     assert repo.list_events()[0]["id"] == 105
+
+
+def test_two_requests_at_the_same_moment_cannot_both_pass_the_rule_limit(database_url):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from app.alerts.repository import RuleLimitReached
+
+    repo = AlertRepository(database_url, owner_id=1, max_rules=1)
+    barrier = Barrier(2)
+
+    def add(ticker):
+        barrier.wait()
+        try:
+            repo.add_rule(ticker, "above", 100)
+            return "added"
+        except RuleLimitReached:
+            return "limit reached"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = sorted(pool.map(add, ["AAPL", "MSFT"]))
+
+    assert results == ["added", "limit reached"]
+    assert len(repo.list_rules()) == 1

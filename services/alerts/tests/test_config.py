@@ -1,13 +1,13 @@
-from pathlib import Path
-
 import pytest
 
 from app.config import RedactSecret, load_config, load_env_file
 
+# Never connected to. load_config only checks its shape.
+FAKE_DATABASE_URL = "mssql+pymssql://someone:not-a-password@db.example:1433/alerts"
+
 VARIABLES = [
     "HOST",
     "PORT",
-    "DATA_DIR",
     "WATCHLIST_URL",
     "WATCHLIST_TIMEOUT_SECONDS",
     "POLL_INTERVAL_SECONDS",
@@ -19,9 +19,10 @@ VARIABLES = [
 
 @pytest.fixture(autouse=True)
 def clean_environment(monkeypatch):
-    """Start every test with none of the service's variables set, except the one secret it needs."""
+    """Start every test with none of the service's variables set, except the secrets it needs."""
     for name in VARIABLES:
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("DATABASE_URL", FAKE_DATABASE_URL)
 
 
 def test_defaults_when_only_the_secret_is_set():
@@ -29,8 +30,7 @@ def test_defaults_when_only_the_secret_is_set():
 
     assert config.host == "0.0.0.0"
     assert config.port == 8002
-    assert config.data_dir == Path("./data")
-    assert config.db_path == Path("./data") / "alerts.db"
+    assert config.database_url == FAKE_DATABASE_URL
     # The watchlist service's name and port in docker-compose.yml.
     assert config.watchlist_url == "http://watchlist:8001"
     assert config.watchlist_timeout_seconds == 3.0
@@ -40,10 +40,9 @@ def test_defaults_when_only_the_secret_is_set():
     assert config.max_alert_rules == 100
 
 
-def test_environment_variables_override_the_defaults(monkeypatch, tmp_path):
+def test_environment_variables_override_the_defaults(monkeypatch):
     monkeypatch.setenv("HOST", "127.0.0.1")
     monkeypatch.setenv("PORT", "9000")
-    monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("WATCHLIST_URL", "https://watchlist.example ")
     monkeypatch.setenv("WATCHLIST_TIMEOUT_SECONDS", "1.5")
     monkeypatch.setenv("POLL_INTERVAL_SECONDS", "0")
@@ -56,7 +55,6 @@ def test_environment_variables_override_the_defaults(monkeypatch, tmp_path):
 
     assert config.host == "127.0.0.1"
     assert config.port == 9000
-    assert config.db_path == tmp_path / "alerts.db"
     assert config.watchlist_url == "https://watchlist.example"
     assert config.watchlist_timeout_seconds == 1.5
     assert config.poll_interval_seconds == 0
@@ -159,3 +157,29 @@ def test_redact_secret_hides_the_secret_in_a_log_line():
     untouched = logging.LogRecord("x", logging.INFO, "f", 1, "nothing here", None, None)
     assert RedactSecret(None).filter(untouched) is True
     assert untouched.getMessage() == "nothing here"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "sqlite:///data/app.db",
+        "mssql+pymssql://db.example/alerts",
+        "mssql+pymssql://someone:not-a-password@db.example",
+        "mssql+pymssql://someone:not-a-password@db.example:port/alerts",
+    ],
+)
+def test_database_url_must_be_set_and_complete(monkeypatch, value):
+    monkeypatch.setenv("DATABASE_URL", value)
+
+    with pytest.raises(ValueError, match="DATABASE_URL"):
+        load_config()
+
+
+def test_a_bad_database_url_is_never_repeated_in_the_error(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgres://someone:not-a-password@db.example/alerts")
+
+    with pytest.raises(ValueError) as error:
+        load_config()
+
+    assert "not-a-password" not in str(error.value)

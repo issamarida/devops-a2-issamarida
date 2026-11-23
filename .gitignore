@@ -218,7 +218,7 @@ __marimo__/
 .streamlit/secrets.toml
 
 # App data
-# SQLite database lives here at runtime (see DATA_DIR in app/config.py)
+# Left over from Assignment 1, when a SQLite file lived here. Nothing writes here now.
 data/
 
 # Local databases and environment variants

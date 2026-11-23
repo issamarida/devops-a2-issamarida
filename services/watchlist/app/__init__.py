@@ -4,13 +4,13 @@ This is the only file allowed to import more than one part of the service.
 """
 
 import logging
-import sqlite3
+from pathlib import Path
 
 from flask import Flask, g
 from flask_cors import CORS
 
 from app.config import Config
-from app.db import check_database, init_db
+from app.db import DatabaseError, check_database
 from app.errors import install_error_handlers
 from app.market.cache import CachedPriceSource
 from app.market.finnhub import FinnhubSource
@@ -18,9 +18,9 @@ from app.market.info import MarketInfo
 from app.market.routes import create_market_blueprint
 from app.market.snapshot import create_snapshot_blueprint
 from app.market.stream import FinnhubStream, LivePrices
+from app.migrations import apply_migrations
 from app.request_log import install_request_log
 from app.security import install_access
-from app.watchlist import SCHEMA_PATH as WATCHLIST_SCHEMA
 from app.watchlist.repository import (
     WatchlistRepository,
     most_watched_tickers,
@@ -31,12 +31,13 @@ from app.watchlist.service import WatchlistService
 
 logger = logging.getLogger(__name__)
 
-# Every schema file init_db runs. tests/conftest.py uses this same list.
-SCHEMA_FILES = [WATCHLIST_SCHEMA]
+# services/watchlist/migrations: the numbered SQL files that define the schema.
+MIGRATIONS = Path(__file__).parent.parent / "migrations"
 
 
 def create_app(config: Config, *, price_source=None) -> Flask:
-    init_db(config.db_path, SCHEMA_FILES)
+    # Bring the schema up to date before the first request. Only new files run.
+    apply_migrations(config.database_url, MIGRATIONS)
 
     app = Flask(__name__)
 
@@ -65,7 +66,7 @@ def create_app(config: Config, *, price_source=None) -> Flask:
         info = MarketInfo(finnhub)
         stream = FinnhubStream(
             config.price_api_key,
-            lambda: most_watched_tickers(config.db_path),
+            lambda: most_watched_tickers(config.database_url),
             max_symbols=config.live_symbol_limit,
         )
         price_source = LivePrices(
@@ -77,7 +78,7 @@ def create_app(config: Config, *, price_source=None) -> Flask:
 
     def watchlist_for(owner_id):
         return WatchlistService(
-            WatchlistRepository(config.db_path, owner_id, config.max_watchlist_items)
+            WatchlistRepository(config.database_url, owner_id, config.max_watchlist_items)
         )
 
     app.extensions["watchlist_for"] = watchlist_for
@@ -95,7 +96,7 @@ def create_app(config: Config, *, price_source=None) -> Flask:
     # The other side of the seam: the alerts service reads this over HTTP.
     app.register_blueprint(
         create_snapshot_blueprint(
-            lambda: tickers_by_owner(config.db_path), price_source
+            lambda: tickers_by_owner(config.database_url), price_source
         )
     )
 
@@ -103,8 +104,8 @@ def create_app(config: Config, *, price_source=None) -> Flask:
     def health():
         # About this service's own database only, never about the alerts service.
         try:
-            check_database(config.db_path)
-        except sqlite3.Error:
+            check_database(config.database_url)
+        except DatabaseError:
             # The details go to the log only, never into the response.
             logger.exception("Health check failed")
             return {"status": "error", "db": "error", "version": config.git_sha}, 503

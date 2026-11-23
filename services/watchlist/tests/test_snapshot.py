@@ -57,15 +57,15 @@ def test_a_ticker_two_accounts_watch_is_looked_up_once():
     assert source.calls == ["AAPL"]
 
 
-def test_tickers_by_owner_groups_each_accounts_tickers(db_path):
-    WatchlistRepository(db_path, 7).add("MSFT", "Microsoft", "", "2026-11-20")
-    WatchlistRepository(db_path, 7).add("AAPL", "Apple", "", "2026-11-20")
-    WatchlistRepository(db_path, 8).add("TSLA", "Tesla", "", "2026-11-20")
+def test_tickers_by_owner_groups_each_accounts_tickers(database_url):
+    WatchlistRepository(database_url, 7).add("MSFT", "Microsoft", "", "2026-11-20")
+    WatchlistRepository(database_url, 7).add("AAPL", "Apple", "", "2026-11-20")
+    WatchlistRepository(database_url, 8).add("TSLA", "Tesla", "", "2026-11-20")
     # Owner 0 is old data from before accounts existed. Nobody owns it.
-    WatchlistRepository(db_path, 0).add("NFLX", "Netflix", "", "2026-11-20")
+    WatchlistRepository(database_url, 0).add("NFLX", "Netflix", "", "2026-11-20")
 
-    assert tickers_by_owner(db_path) == {"7": ["AAPL", "MSFT"], "8": ["TSLA"]}
+    assert tickers_by_owner(database_url) == {"7": ["AAPL", "MSFT"], "8": ["TSLA"]}
 
 
-def test_tickers_by_owner_is_empty_when_nothing_is_watched(db_path):
-    assert tickers_by_owner(db_path) == {}
+def test_tickers_by_owner_is_empty_when_nothing_is_watched(database_url):
+    assert tickers_by_owner(database_url) == {}

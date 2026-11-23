@@ -1,15 +1,14 @@
-import sqlite3
-
 import pytest
 
-from app import SCHEMA_FILES
-from app.db import init_db
+from app import MIGRATIONS
+from app.db import IntegrityError
+from app.migrations import apply_migrations
 from app.watchlist.repository import WatchlistRepository
 
 
 @pytest.fixture
-def repo(db_path):
-    return WatchlistRepository(db_path)
+def repo(database_url):
+    return WatchlistRepository(database_url)
 
 
 def test_add_returns_item_with_new_id(repo):
@@ -22,7 +21,7 @@ def test_add_returns_item_with_new_id(repo):
 def test_add_duplicate_raises_integrity_error(repo):
     repo.add("AAPL", "Apple", "", "2026-10-01T09:00:00+00:00")
 
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises(IntegrityError):
         repo.add("AAPL", "Apple again", "", "2026-10-01T09:01:00+00:00")
 
 
@@ -38,13 +37,16 @@ def test_list_all_is_sorted_by_ticker(repo):
     assert [item.ticker for item in repo.list_all()] == ["AAPL", "BRK.B", "MSFT"]
 
 
-def test_lookups_are_case_sensitive_so_the_service_must_normalize(repo):
-    # The repository stores what it's given. WatchlistService uppercases first.
+def test_sql_server_compares_tickers_without_case(repo):
+    # SQLite told "aapl" and "AAPL" apart. SQL Server's default collation does
+    # not, so the same ticker can never be stored twice in two spellings.
+    # WatchlistService still uppercases first, so what is stored is upper case.
     repo.add("AAPL", "Apple", "", "2026-10-01T09:00:00+00:00")
 
-    assert repo.exists("aapl") is False
-    assert repo.delete("aapl") is False
-    assert repo.exists("AAPL") is True
+    assert repo.exists("aapl") is True
+    with pytest.raises(IntegrityError):
+        repo.add("aapl", "Apple in lower case", "", "2026-10-01T09:01:00+00:00")
+    assert [item.ticker for item in repo.list_all()] == ["AAPL"]
 
 
 def test_delete_removes_only_that_ticker(repo):
@@ -55,17 +57,17 @@ def test_delete_removes_only_that_ticker(repo):
     assert [item.ticker for item in repo.list_all()] == ["MSFT"]
 
 
-def test_init_db_twice_keeps_existing_rows(repo, db_path):
+def test_applying_the_migrations_again_keeps_existing_rows(repo, database_url):
     repo.add("AAPL", "Apple", "", "2026-10-01T09:00:00+00:00")
 
-    init_db(db_path, SCHEMA_FILES)
+    assert apply_migrations(database_url, MIGRATIONS) == []
 
     assert repo.exists("AAPL") is True
 
 
-def test_same_ticker_is_private_to_each_owner(db_path):
-    alice = WatchlistRepository(db_path, 1)
-    bob = WatchlistRepository(db_path, 2)
+def test_same_ticker_is_private_to_each_owner(database_url):
+    alice = WatchlistRepository(database_url, 1)
+    bob = WatchlistRepository(database_url, 2)
     alice.add("AAPL", "Apple", "Private note", "2026-10-03")
     assert bob.list_all() == []
     assert bob.get_by_ticker("AAPL") is None
@@ -73,3 +75,27 @@ def test_same_ticker_is_private_to_each_owner(db_path):
     bob.add("AAPL", "Apple", "Other note", "2026-10-03")
     assert bob.get_by_ticker("AAPL").notes == "Other note"
     assert alice.get_by_ticker("AAPL").notes == "Private note"
+
+
+def test_two_requests_at_the_same_moment_cannot_both_pass_the_limit(database_url):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from app.watchlist.repository import WatchlistLimitReached
+
+    repo = WatchlistRepository(database_url, owner_id=1, max_items=1)
+    barrier = Barrier(2)
+
+    def add(ticker):
+        barrier.wait()
+        try:
+            repo.add(ticker, ticker, "", "2026-10-01T09:00:00+00:00")
+            return "added"
+        except WatchlistLimitReached:
+            return "limit reached"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = sorted(pool.map(add, ["AAPL", "MSFT"]))
+
+    assert results == ["added", "limit reached"]
+    assert len(repo.list_all()) == 1
