@@ -83,3 +83,17 @@ Decision: ADR-2 held, so the seam stays where it was: the watchlist service keep
 Alternatives considered: Giving alerts its own Finnhub client was rejected because one API key has one rate limit and watchlist already knows which tickers to stream. Joining the two services in the browser was rejected for this flow because the poller runs with no browser, one request per rule was rejected as too chatty over a network, and checking rules against the last known prices while watchlist is down was rejected because a stale price could fire a rule wrongly.
 
 Consequences: Watchlist never calls alerts, so it keeps working when alerts is stopped and the dashboard's alert summary now comes from the UI calling alerts itself. The cost is that rules cannot be created or checked while watchlist is down, and the timeout and failure paths are new code the tests have to cover.
+
+## 7. One database per service and versioned migrations
+
+Date: 2026-11-23
+
+Status: Decided
+
+Context: Assignment 1 kept both domains in one SQLite file and created the tables on first boot. Assignment 2 gives each service its own SQL Server database and login, and a database that holds data has to be changed in place. Assignment 1 was never deployed and its SQLite file was a git-ignored local file, so there were no rows to carry over, only a schema to port.
+
+Decision: Each table moved with the service that owns it, and each schema is now a list of numbered SQL files that my own runner applies in order at startup: one transaction per file together with its row in schema_migrations, a stored checksum that stops the start if an applied file was edited, and a lock so two copies of a service cannot run the same file. The databases can no longer guarantee that a rule's ticker is watched or that its owner exists, so the code does it (a rule is created only after the watchlist confirms the ticker over HTTP, every check asks again, a rule whose ticker is gone turns dormant, and the owner ID only comes from a signed token), and migrations are forward-only: a file that fails changes nothing and is fixed before it is ever recorded, a wrong one is corrected by a new file, and damaged rows come back from an Azure point-in-time restore into a new database.
+
+Alternatives considered: Alembic was rejected because it brings SQLAlchemy into services that use plain SQL (ADR-1), and its generated scripts are harder for me to explain line by line than a SQL file and a runner of about a hundred lines. pyodbc was rejected because it needs Microsoft's ODBC driver installed in the image, while pymssql brings its own. Running migrations from the pipeline was rejected because CI must never connect to Azure SQL and the brief asks for them at startup. Down-migrations were rejected because a rollback script that never runs in production gives false comfort.
+
+Consequences: The service login needs the right to change its own schema, and a change the running old version cannot live with, such as dropping a column, has to wait one release because old and new code overlap during a deploy. Running the tests against a real SQL Server showed three differences from SQLite that a fake would have hidden (text is compared without case, an ID is never reused, and a CHAR column made the sign-in rate limiter deadlock because the driver sends Unicode), which is why every text column is NVARCHAR or NCHAR.
