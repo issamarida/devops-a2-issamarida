@@ -1,7 +1,7 @@
 # Runs on every push and every pull request (Assignment 2 brief, section 5).
 # Each service is installed, linted and tested on its own, from its own folder.
-# The database job starts the local SQL Server from docker-compose.yml.
-# Nothing here connects to Azure.
+# The tests run against a SQL Server container started from docker-compose.yml.
+# Nothing here connects to Azure, so CI never wakes or changes the Azure databases.
 name: CI
 
 on:
@@ -34,9 +34,26 @@ jobs:
         run: pip install -r requirements.txt
       - name: Lint
         run: ruff check .
+      # A SQL Server container with both databases and logins, made by the same
+      # compose file and db/init.sql a clean clone uses. The tests connect as
+      # this service's own login, which has the same rights as on Azure.
+      - name: Start the test database
+        working-directory: .
+        run: sh db/test-db.sh up
+      - name: Hand its connection string to the tests
+        working-directory: .
+        run: |
+          url=$(sh db/test-db.sh url ${{ matrix.service }})
+          # The password was made up inside this job. Keep it out of the log anyway.
+          echo "::add-mask::$url"
+          echo "TEST_DATABASE_URL=$url" >> "$GITHUB_ENV"
       # .coveragerc in the service folder fails the run below 70% coverage.
       - name: Test with coverage
         run: pytest --cov --cov-report=term-missing
+      - name: Show the SQL Server log if a step failed
+        if: failure()
+        working-directory: .
+        run: docker compose -p stocks-test logs db
 
   database:
     name: Local databases and logins
