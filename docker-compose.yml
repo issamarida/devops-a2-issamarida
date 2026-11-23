@@ -1,12 +1,16 @@
-# The local system. `docker compose up --build` starts all of it from a clean clone.
+# The local system. `docker compose up --build` starts it from a clean clone.
 #
-# So far it holds the database side: one SQL Server container with one database
-# and one login per service (brief section 1a). The two services and the UI are
-# added here together with their Dockerfiles.
+# Two service containers, watchlist and alerts, each built from its own
+# Dockerfile, and one SQL Server container with one database and one login per
+# service (brief section 1a). secrets and db-init are one-off helpers that run
+# and exit. The static UI is not here yet.
+#
+#     watchlist  http://localhost:8001
+#     alerts     http://localhost:8002
 
 services:
-  # Runs once and exits. Makes up the local passwords on the first start and
-  # keeps them in a volume, so no password is written in this repository.
+  # Runs once and exits. Makes up the local secrets on the first start and
+  # keeps them in a volume, so no secret is written in this repository.
   # It uses the SQL Server image only because that image is needed anyway and
   # has a shell. It runs as root to be allowed to write into the new volume.
   secrets:
@@ -64,6 +68,81 @@ services:
         export WATCHLIST_PASSWORD="$$(cat /run/local-secrets/watchlist_password)"
         export ALERTS_PASSWORD="$$(cat /run/local-secrets/alerts_password)"
         exec /opt/mssql-tools18/bin/sqlcmd -S db -U sa -C -b -i /db/init.sql
+
+  watchlist:
+    build:
+      context: ./services/watchlist
+      args:
+        # Set GIT_SHA when you build to see the commit in GET /health.
+        GIT_SHA: ${GIT_SHA:-dev}
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+    environment:
+      PORT: "8001"
+      # The address of the UI. Only pages from there may call this service.
+      CORS_ORIGINS: http://localhost:8080
+      # Optional. Without a Finnhub key every price is reported as unavailable.
+      # Compose takes it from your shell or from a git-ignored .env file.
+      PRICE_API_KEY: ${PRICE_API_KEY:-}
+    volumes:
+      - local-secrets:/run/local-secrets:ro
+    # The two secrets are read from the volume into the environment, then the
+    # service starts exactly as the image would start it. The service itself
+    # only ever reads DATABASE_URL and TOKEN_SECRET.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        export DATABASE_URL="mssql+pymssql://watchlist_user:$$(cat /run/local-secrets/watchlist_password)@db:1433/watchlist"
+        export TOKEN_SECRET="$$(cat /run/local-secrets/token_secret)"
+        exec python app.py
+    ports:
+      - "127.0.0.1:8001:8001"
+    healthcheck:
+      # GET /health answers 200 only when the service can write and read its own database.
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen("http://localhost:8001/health", timeout=2)
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  alerts:
+    build:
+      context: ./services/alerts
+      args:
+        GIT_SHA: ${GIT_SHA:-dev}
+    # It waits for its own database only. It does not wait for the watchlist
+    # service: alerts starts and serves its own data when nothing answers there.
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+    environment:
+      PORT: "8002"
+      CORS_ORIGINS: http://localhost:8080
+      # Where the watchlist service is. No hostname is written in the code.
+      WATCHLIST_URL: http://watchlist:8001
+    volumes:
+      - local-secrets:/run/local-secrets:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        export DATABASE_URL="mssql+pymssql://alerts_user:$$(cat /run/local-secrets/alerts_password)@db:1433/alerts"
+        export TOKEN_SECRET="$$(cat /run/local-secrets/token_secret)"
+        exec python app.py
+    ports:
+      - "127.0.0.1:8002:8002"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen("http://localhost:8002/health", timeout=2)
+      interval: 5s
+      timeout: 3s
+      retries: 12
 
 volumes:
   local-secrets:
