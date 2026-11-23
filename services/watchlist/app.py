@@ -8,6 +8,7 @@ from waitress import serve
 
 from app import create_app
 from app.config import RedactSecret, load_config, load_env_file
+from app.db import parse_database_url
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 
@@ -18,6 +19,7 @@ config = load_config()
 for handler in logging.getLogger().handlers:
     handler.addFilter(RedactSecret(config.price_api_key))
     handler.addFilter(RedactSecret(config.token_secret))
+    handler.addFilter(RedactSecret(parse_database_url(config.database_url)["password"]))
 # The stream logs its own short warnings, so the library's verbose ones are muted.
 logging.getLogger("websocket").setLevel(logging.CRITICAL)
 logging.info(

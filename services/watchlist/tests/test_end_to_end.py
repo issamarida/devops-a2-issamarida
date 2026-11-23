@@ -101,10 +101,10 @@ def test_stream_follows_the_most_watched_tickers_of_real_accounts(client, sign_u
         add(client, headers, "TSLA")
     add(client, alice, "AAPL")
 
-    assert most_watched_tickers(load_config().db_path) == ["TSLA", "AAPL"]
+    assert most_watched_tickers(load_config().database_url) == ["TSLA", "AAPL"]
 
 
-def test_runtime_wiring_builds_a_stream_that_create_app_never_starts(monkeypatch):
+def test_runtime_wiring_builds_a_stream_that_create_app_never_starts(monkeypatch, database_url):
     from app.market.stream import FinnhubStream
 
     monkeypatch.setenv("PRICE_API_KEY", "fake-key-for-tests")

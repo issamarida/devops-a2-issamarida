@@ -1,9 +1,9 @@
 """Watchlist rules: clean up the ticker, check the input, block duplicates."""
 
 import re
-import sqlite3
 from datetime import datetime, timezone
 
+from app.db import IntegrityError
 from app.watchlist.repository import (
     WatchlistItem,
     WatchlistLimitReached,
@@ -52,8 +52,8 @@ class WatchlistService:
             return self.repository.add(ticker, name, notes, added_at)
         except WatchlistLimitReached as error:
             raise InvalidWatchlistItemError(str(error)) from None
-        except sqlite3.IntegrityError:
-            # The UNIQUE constraint on ticker rejected it
+        except IntegrityError:
+            # The UNIQUE constraint on owner and ticker rejected it
             raise DuplicateTickerError(f"{ticker} is already on the watchlist.") from None
 
     def list_items(self) -> list[WatchlistItem]:

@@ -1,19 +1,22 @@
 """Settings read from environment variables.
 
-Every setting has a default except the two secrets: TOKEN_SECRET must be set,
-and PRICE_API_KEY is optional (without it prices are simply unavailable).
+Every setting has a default except the three secrets: DATABASE_URL and
+TOKEN_SECRET must be set, and PRICE_API_KEY is optional (without it prices are
+simply unavailable).
 """
 
 import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.db import parse_database_url
+
 
 @dataclass
 class Config:
     host: str
     port: int
-    data_dir: Path
+    database_url: str
     price_api_key: str | None
     price_cache_ttl_seconds: int
     token_secret: str
@@ -26,10 +29,6 @@ class Config:
     max_watchlist_items: int = 30
     quote_requests_per_minute: int = 50
     live_symbol_limit: int = 50
-
-    @property
-    def db_path(self) -> Path:
-        return self.data_dir / "app.db"
 
 
 def read_int(name: str, default: str) -> int:
@@ -51,6 +50,12 @@ def load_config() -> Config:
         raise ValueError(
             f"PRICE_CACHE_TTL_SECONDS must be 0 or more, got {price_cache_ttl_seconds}"
         )
+
+    # A secret, because it holds the database password, so it has no default.
+    database_url = os.environ.get("DATABASE_URL", "").strip()
+    if not database_url:
+        raise ValueError("DATABASE_URL must be set")
+    parse_database_url(database_url)  # stops here, naming the variable, if it is malformed
 
     # A secret, so it has no default. Both services must be given the same value.
     token_secret = os.environ.get("TOKEN_SECRET", "")
@@ -79,7 +84,7 @@ def load_config() -> Config:
     return Config(
         host=os.environ.get("HOST", "0.0.0.0"),
         port=port,
-        data_dir=Path(os.environ.get("DATA_DIR", "./data")),
+        database_url=database_url,
         # An empty or whitespace-only key counts as not configured.
         price_api_key=os.environ.get("PRICE_API_KEY", "").strip() or None,
         price_cache_ttl_seconds=price_cache_ttl_seconds,
