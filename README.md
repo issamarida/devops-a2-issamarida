@@ -23,18 +23,53 @@ Assignment 2 is in progress. This table is kept honest against the brief.
 | 3 Partial failure handled in a designed way | Done in the API. The UI part is not built yet |
 | 3 `/health` with status, db and version, one log line per request | Done |
 | 1a CORS only from the UI's origin, in code | Done |
-| 5 CI: lint, tests and coverage per service, against a SQL Server container | Done. Schema validation and image builds are not added yet |
+| 5 CI: lint, tests and coverage per service, against a SQL Server container | Done |
+| 5 CI builds every image | Done. CI also starts the whole system and checks both `/health` answers |
+| 5 CI validates `system.yaml` and each `openapi.yaml` | Not yet |
 | 1a SQL Server, one database and one login per service, `DATABASE_URL` | Done. SQLite is gone from the code |
 | 4 Versioned migrations, applied in order at startup and recorded | Done: `001_init.sql` in each service |
 | 4 A migration that changes a table holding data, with evidence on Azure | Not yet. It comes after the first deployment, because the database must hold data first |
-| 1a Dockerfiles and `docker compose up --build` | Started. `docker-compose.yml` starts the database only. No Dockerfiles yet, so the services run with `python app.py` |
+| 1a Own Dockerfiles: no `COPY . .`, no secrets in the image, pinned dependencies, non-root user | Done |
+| 1a `docker compose up --build` from a clean clone | Done for both services and the database. The UI is not in it yet |
 | 1a Static UI in `ui/` | Not yet. `ui/` still holds the Assignment 1 Jinja templates as the starting point |
 | 5 and 7 CD and the Azure deployment | Not yet |
 | 8a `openapi.yaml` per service and `system.yaml` | Not yet. `system.schema.json` is in place |
 
-## Run the two services
+## Run it with one command
 
-Python 3.14. One virtual environment can serve both services while working locally.
+You need Docker with the compose plugin. Nothing else has to be installed, created or configured.
+
+```sh
+docker compose up --build
+```
+
+That builds both images, makes up the local secrets, starts SQL Server, creates the two databases and logins, and starts both services. Each service applies its migrations before it answers.
+
+| Address | What is there |
+|---|---|
+| `http://localhost:8001/health` | watchlist service |
+| `http://localhost:8002/health` | alerts service |
+
+- To see the commit in `/health`, build with it: `env GIT_SHA=(git rev-parse --short HEAD) docker compose up --build`.
+- To get prices, put `PRICE_API_KEY=<your Finnhub key>` in a git-ignored `.env` file next to `docker-compose.yml`. Without it the system still runs and every price is reported as unavailable.
+- To run a single service: `docker compose up --build watchlist`. It starts its database first and nothing else. `docker compose up --build alerts` works the same way, and alerts serves its own data without the watchlist.
+- To see partial failure: `docker compose stop watchlist`, then call the alerts service. The table under "The seam, and when the watchlist is down" says what to expect.
+- `docker compose down` stops everything and keeps the data. The next `up` finds it again and applies no migration twice.
+
+## The images
+
+Each service has its own `Dockerfile` in its own folder. Both follow the same rules:
+
+- The base image is pinned by version and by digest.
+- Only `requirements.txt`, `app.py`, `app/` and `migrations/` are copied, each by name. There is no `COPY . .`, and `.dockerignore` keeps everything else out of the build, a local `.env` included.
+- Every dependency version is pinned in `requirements.txt`.
+- The service runs as user 10001, which can read its files and write nothing.
+- No secret is in the image. `DATABASE_URL`, `TOKEN_SECRET` and `PRICE_API_KEY` are given to the container when it starts.
+- `GIT_SHA` is a build argument. `/health` reports it as `version`.
+
+## Run a service without Docker
+
+Python 3.14. One virtual environment can serve both services while working locally. The database still comes from compose.
 
 ```sh
 uv venv
@@ -49,10 +84,10 @@ Both services need the same `TOKEN_SECRET`, at least 32 characters. It is a secr
 set -x TOKEN_SECRET (python -c "import secrets; print(secrets.token_urlsafe(48))")
 ```
 
-Start the database, then give each service its own connection string. The password is read from the volume where compose keeps it, so it never appears on screen or in a file:
+Start the database only, then give each service its own connection string. The password is read from the volume where compose keeps it, so it never appears on screen or in a file:
 
 ```sh
-docker compose up -d
+docker compose up -d db-init
 set W (docker compose exec -T db cat /run/local-secrets/watchlist_password)
 set A (docker compose exec -T db cat /run/local-secrets/alerts_password)
 ```
@@ -75,17 +110,18 @@ Prices come from Finnhub. Set `PRICE_API_KEY` for the watchlist service to get t
 `docker-compose.yml` starts one SQL Server container that holds one database per service. Each service connects to its own database with its own login and never to the other one.
 
 ```sh
-docker compose up -d
+docker compose up -d db-init
 sh db/check-logins.sh
 ```
 
 | Compose service | What it does |
 |---|---|
-| `secrets` | Runs once. Makes up the local passwords on the first start and keeps them in the `local-secrets` volume |
+| `secrets` | Runs once. Makes up the three database passwords and the token secret on the first start and keeps them in the `local-secrets` volume |
 | `db` | SQL Server 2022. Its data is in the `db-data` volume and survives `docker compose down` |
 | `db-init` | Runs `db/init.sql` on every start. Creates the `watchlist` and `alerts` databases and one login for each, if they are missing |
+| `watchlist`, `alerts` | The two services, each built from the `Dockerfile` in its own folder |
 
-- No password is written in this repository, not even a local one. `db/make-secrets.sh` makes them up on your machine.
+- No secret is written in this repository, not even a local one. `db/make-secrets.sh` makes them up on your machine. Compose reads them from the volume into `DATABASE_URL` and `TOKEN_SECRET` when a service starts.
 - `db/init.sql` checks before it creates, so running it again changes nothing.
 - `watchlist_user` has a user in the `watchlist` database only, and `alerts_user` in `alerts` only. `db/check-logins.sh` proves each login opens its own database and is refused on the other. CI runs it on every push.
 - `docker compose down -v` deletes both volumes, which deletes the data and the passwords. It is never needed to restart or rebuild.
@@ -222,7 +258,7 @@ Verified on 23 November 2026: watchlist 251 tests and alerts 229 tests, both at 
 
 No test touches the internet. Finnhub is mocked. The cross-seam tests in `services/alerts/tests` replace the watchlist service with `StubWatchlist`, a real HTTP server on localhost that checks the service token as the real one does. The tests stop it, slow it down and make it answer nonsense to prove the answers in the table above.
 
-CI in `.github/workflows/ci.yml` runs the linter and both test suites on every push and pull request, against a SQL Server container it starts with `db/test-db.sh`. A third job starts the compose database, runs `db/init.sql` twice and runs `db/check-logins.sh`. CI never connects to Azure.
+CI in `.github/workflows/ci.yml` runs the linter and both test suites on every push and pull request, against a SQL Server container it starts with `db/test-db.sh`. A third job runs `docker compose up --build`, so a failed image build fails the pipeline. It then runs `db/init.sql` a second time, runs `db/check-logins.sh`, checks that both `/health` answers carry the commit and that neither container runs as root. CI never connects to Azure.
 
 ## Rules of the domain
 

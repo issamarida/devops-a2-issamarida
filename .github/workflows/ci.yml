@@ -1,6 +1,7 @@
 # Runs on every push and every pull request (Assignment 2 brief, section 5).
 # Each service is installed, linted and tested on its own, from its own folder.
 # The tests run against a SQL Server container started from docker-compose.yml.
+# The compose job builds both images and starts the whole system.
 # Nothing here connects to Azure, so CI never wakes or changes the Azure databases.
 name: CI
 
@@ -55,22 +56,39 @@ jobs:
         working-directory: .
         run: docker compose -p stocks-test logs db
 
-  database:
-    name: Local databases and logins
+  compose:
+    name: Build the images and start the system
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # The same commands a clean clone uses. The passwords are made up inside
-      # the job by the compose file, so the workflow holds no database password.
-      - name: Start SQL Server
-        run: docker compose up -d --wait db
-      - name: Create the databases and logins
-        run: docker compose run --rm db-init
+      # The one command a clean clone uses. It builds both Dockerfiles, so a
+      # failed build fails the pipeline, and it waits until SQL Server and both
+      # services report healthy. The secrets are made up inside the job by the
+      # compose file, so the workflow holds none.
+      - name: Build both images and start everything
+        env:
+          GIT_SHA: ${{ github.sha }}
+        run: docker compose up --build -d --wait
       # db/init.sql runs on every start, so a second run must succeed and change nothing.
       - name: Run db/init.sql a second time
         run: docker compose run --rm db-init
       - name: Each login opens its own database only
         run: sh db/check-logins.sh
-      - name: Show the SQL Server log if a step failed
+      - name: Both services answer /health with this commit as the version
+        run: |
+          for port in 8001 8002; do
+            curl --fail --silent --show-error "http://localhost:$port/health" | tee health.json
+            echo
+            grep --quiet "\"version\":\"$GITHUB_SHA\"" health.json
+            grep --quiet '"db":"ok"' health.json
+          done
+      - name: Neither service runs as root
+        run: |
+          for service in watchlist alerts; do
+            user=$(docker compose exec -T "$service" id -u)
+            echo "$service runs as user $user"
+            test "$user" != 0
+          done
+      - name: Show the container logs if a step failed
         if: failure()
-        run: docker compose logs db
+        run: docker compose logs
