@@ -1,7 +1,8 @@
 # Runs on every push and every pull request (Assignment 2 brief, section 5).
 # Each service is installed, linted and tested on its own, from its own folder.
 # The tests run against a SQL Server container started from docker-compose.yml.
-# The compose job builds both images and starts the whole system.
+# The ui job tests the scripts of the static UI.
+# The compose job builds both images and starts the whole system, UI included.
 # Nothing here connects to Azure, so CI never wakes or changes the Azure databases.
 name: CI
 
@@ -56,6 +57,30 @@ jobs:
         working-directory: .
         run: docker compose -p stocks-test logs db
 
+  ui:
+    name: Test the static UI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      # Node's own test runner. The UI has no package.json and installs nothing.
+      # The tests cover ui/api.js: timeouts, the retries while a service starts
+      # up and what happens when a service answers with an error.
+      - name: Test the UI scripts
+        run: node --test "ui-tests/*.test.mjs"
+      # Brief section 1a: the services' addresses are configuration. If a page
+      # or script names one, this step fails and prints the line. The one web
+      # address allowed is the fixed name of the SVG format, which is not a server.
+      - name: No service address is written in ui/ outside config.js
+        run: |
+          if grep -rnE "localhost|127\.0\.0\.1|azurecontainerapps|https?://" ui --exclude=config.js \
+              | grep -v "http://www.w3.org/2000/svg"; then
+            echo "An address is hardcoded in the lines above. It belongs in ui/config.js."
+            exit 1
+          fi
+
   compose:
     name: Build the images and start the system
     runs-on: ubuntu-latest
@@ -81,6 +106,31 @@ jobs:
             echo
             grep --quiet "\"version\":\"$GITHUB_SHA\"" health.json
             grep --quiet '"db":"ok"' health.json
+          done
+      # The UI is plain files behind nginx. Its config.js must point at services
+      # that really answer, or the pages would load and then show nothing.
+      - name: The UI is served and its config.js points at both services
+        run: |
+          curl --fail --silent --show-error http://localhost:8080/ | grep --quiet "<title>Dashboard"
+          curl --fail --silent --show-error http://localhost:8080/config.js | tee config.js
+          addresses=$(grep --only-matching 'http://[a-z0-9.:]*' config.js)
+          test "$(echo "$addresses" | wc -l)" = 2
+          for address in $addresses; do
+            curl --fail --silent --show-error "$address/health"
+            echo
+          done
+      # CORS is done in the service code (brief section 1a). A browser page from
+      # the UI's address gets the header that lets it read the answer. A page
+      # from anywhere else gets no such header, so the browser blocks it.
+      - name: Each service accepts browser requests from the UI's address only
+        run: |
+          for port in 8001 8002; do
+            curl --silent --output /dev/null --dump-header ui.txt \
+              --header "Origin: http://localhost:8080" "http://localhost:$port/health"
+            grep --ignore-case "^access-control-allow-origin: http://localhost:8080" ui.txt
+            curl --silent --output /dev/null --dump-header other.txt \
+              --header "Origin: http://localhost:9999" "http://localhost:$port/health"
+            ! grep --ignore-case "^access-control-allow-origin" other.txt
           done
       - name: Neither service runs as root
         run: |

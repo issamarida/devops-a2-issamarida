@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <!-- Only scripts and styles from these files may run. Text from a service is never run as code. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src *; base-uri 'none'; form-action 'none'">
+  <meta name="referrer" content="no-referrer">
+  <title>Sign in · Market workspace</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<a class="skip" href="#content">Skip to content</a>
+<main id="content" class="auth-main">
+<div class="auth-shell">
+  <div class="auth-intro">
+    <a class="brand" href="signin.html"><span class="brand-mark" aria-hidden="true">↗</span><span>Watchlist<small>Your market workspace</small></span></a>
+    <h1>Keep an eye on<br>what matters to you.</h1>
+    <p>A focused space for the stocks you follow. Set a price threshold and review what triggered, without keeping a chart open all day.</p>
+    <ol class="guide"><li><span><strong>Your watchlist</strong>Save tickers and the reasons you follow them.</span></li><li><span><strong>Your price rules</strong>Choose a threshold above or below a price.</span></li><li><span><strong>Your trigger history</strong>Review one-shot alerts in your private account.</span></li></ol>
+  </div>
+  <section class="card auth-card" aria-labelledby="auth-title">
+    <div class="eyebrow">Your private workspace</div>
+    <h2 id="auth-title" data-title>Welcome back</h2>
+    <!-- Shown while the services wake up after a quiet period. -->
+    <div class="message notice" role="status" data-starting hidden>The service is starting up. It sleeps when nobody is using it, and waking it can take up to a minute. You can sign in as soon as this message goes away.</div>
+    <div class="message error" role="alert" data-error hidden></div>
+    <noscript><div class="message error">This page needs JavaScript to sign you in.</div></noscript>
+    <p class="hint" data-intro>Sign in to your watchlist and price alerts.</p>
+    <form class="add" data-form>
+      <label>Username<input name="username" autocomplete="username" minlength="3" maxlength="30" pattern="[a-zA-Z0-9_]{3,30}" required placeholder="e.g. alex_invests"></label>
+      <label>Password<input name="password" type="password" autocomplete="current-password" maxlength="128" required></label>
+      <p class="hint" data-password-hint hidden>15–128 characters. No email is collected. Password recovery is not available in this version, so keep your password safe.</p>
+      <button type="submit"><span data-submit-label>Sign in</span> <span aria-hidden="true">→</span></button>
+    </form>
+    <p class="auth-footer"><span data-switch-text>New here?</span> <button class="link" type="button" data-switch>Create an account</button></p>
+  </section>
+</div>
+</main>
+<script src="config.js"></script>
+<script type="module" src="signin.js"></script>
+</body>
+</html>

@@ -9,7 +9,7 @@ Assignment 1 was one Flask process with one SQLite file. Assignment 2 splits it 
 | watchlist | `services/watchlist` | tracked assets, Finnhub prices, accounts and sign in | 8001 |
 | alerts | `services/alerts` | price rules, trigger history, the background check | 8002 |
 
-Each service has its own SQL Server database and its own login. The alerts service calls the watchlist service over HTTP. The watchlist service never calls alerts. The static UI in `ui/` will call both from the browser.
+Each service has its own SQL Server database and its own login. The alerts service calls the watchlist service over HTTP. The watchlist service never calls alerts. The static UI in `ui/` calls both from the browser.
 
 ## Status
 
@@ -20,9 +20,9 @@ Assignment 2 is in progress. This table is kept honest against the brief.
 | 1a Two services, own folders, own manifests | Done |
 | 1a HTTP between services through an environment variable | Done |
 | 3 Cross-seam flow on the server side, timeout on every call | Done |
-| 3 Partial failure handled in a designed way | Done in the API. The UI part is not built yet |
+| 3 Partial failure handled in a designed way | Done in the API and in the UI |
 | 3 `/health` with status, db and version, one log line per request | Done |
-| 1a CORS only from the UI's origin, in code | Done |
+| 1a CORS only from the UI's origin, in code | Done. CI checks it on the running containers |
 | 5 CI: lint, tests and coverage per service, against a SQL Server container | Done |
 | 5 CI builds every image | Done. CI also starts the whole system and checks both `/health` answers |
 | 5 CI validates `system.yaml` and each `openapi.yaml` | Not yet |
@@ -30,8 +30,9 @@ Assignment 2 is in progress. This table is kept honest against the brief.
 | 4 Versioned migrations, applied in order at startup and recorded | Done: `001_init.sql` in each service |
 | 4 A migration that changes a table holding data, with evidence on Azure | Not yet. It comes after the first deployment, because the database must hold data first |
 | 1a Own Dockerfiles: no `COPY . .`, no secrets in the image, pinned dependencies, non-root user | Done |
-| 1a `docker compose up --build` from a clean clone | Done for both services and the database. The UI is not in it yet |
-| 1a Static UI in `ui/` | Not yet. `ui/` still holds the Assignment 1 Jinja templates as the starting point |
+| 1a `docker compose up --build` from a clean clone | Done: database, both services and the UI |
+| 1a Static UI in `ui/`, addresses from `config.js`, served by nginx locally | Done. Not yet on Azure Storage |
+| 7.5 The UI handles a sleeping service in a designed way | Done locally: a "starting up" notice and retries. Not yet seen on Azure |
 | 5 and 7 CD and the Azure deployment | Not yet |
 | 8a `openapi.yaml` per service and `system.yaml` | Not yet. `system.schema.json` is in place |
 
@@ -43,18 +44,54 @@ You need Docker with the compose plugin. Nothing else has to be installed, creat
 docker compose up --build
 ```
 
-That builds both images, makes up the local secrets, starts SQL Server, creates the two databases and logins, and starts both services. Each service applies its migrations before it answers.
+That builds both images, makes up the local secrets, starts SQL Server, creates the two databases and logins, and starts both services and the UI. Each service applies its migrations before it answers.
 
 | Address | What is there |
 |---|---|
+| `http://localhost:8080` | the app. Open this one |
 | `http://localhost:8001/health` | watchlist service |
 | `http://localhost:8002/health` | alerts service |
 
 - To see the commit in `/health`, build with it: `env GIT_SHA=(git rev-parse --short HEAD) docker compose up --build`.
 - To get prices, put `PRICE_API_KEY=<your Finnhub key>` in a git-ignored `.env` file next to `docker-compose.yml`. Without it the system still runs and every price is reported as unavailable.
 - To run a single service: `docker compose up --build watchlist`. It starts its database first and nothing else. `docker compose up --build alerts` works the same way, and alerts serves its own data without the watchlist.
-- To see partial failure: `docker compose stop watchlist`, then call the alerts service. The table under "The seam, and when the watchlist is down" says what to expect.
+- To see partial failure: `docker compose stop watchlist`, then open the price alerts page. "What a user sees when something is down" says what to expect.
 - `docker compose down` stops everything and keeps the data. The next `up` finds it again and applies no migration twice.
+
+## The UI
+
+The UI is plain HTML, CSS and JavaScript in `ui/`. There is no framework and no build step. The browser loads the files and then calls both services itself.
+
+| File | What it is |
+|---|---|
+| `index.html`, `dashboard.js` | The dashboard: the watchlist with live prices |
+| `alerts.html`, `alerts.js` | Price alerts: rules, their status and the trigger history |
+| `signin.html`, `signin.js` | Sign in and create an account |
+| `config.js` | The addresses of the two services. The only file that names them |
+| `api.js` | Sends every request: address from `config.js`, the token, a timeout, retries |
+| `page.js` | What the signed-in pages share, and the loop that keeps a page up to date |
+| `quotes.js` | Live prices, drawn into the tables |
+| `styles.css` | The look, in light and dark |
+
+- `config.js` in the repository holds the compose addresses. The deployment pipeline will write it again with the Azure addresses when it uploads the UI. A CI step fails if any other file in `ui/` names an address.
+- The dashboard takes its assets and prices from the watchlist service and its two alert numbers from the alerts service. The alerts page takes rules and history from alerts, and the ticker list and prices from the watchlist. Creating a rule is the flow that crosses the seam on the server side.
+- The sign-in token is kept in `sessionStorage`, so it lasts as long as the browser tab. A page without a token goes to sign in.
+- Each page carries a Content-Security-Policy that only lets its own scripts and styles run. Text from a service is always written as text and never as HTML.
+- A page asks again every second for prices and every five seconds for alerts. It stops when the tab is hidden and after five minutes without a key or pointer movement, so a forgotten tab does not keep the Azure containers and databases awake. A notice says the updates are paused, and any movement continues them.
+
+### What a user sees when something is down
+
+Every request has a 20 second timeout, so no page hangs.
+
+| Situation | What the page does |
+|---|---|
+| A service is asleep or still starting (section 7.5) | A notice says it is starting up and can take up to a minute. A read is tried again for about a minute and the page fills in by itself |
+| The sign-in page opens on a sleeping system | It asks `/health` of both services at once to wake them. A sign in sent meanwhile goes through as soon as the service is up |
+| A service never answers | The notice becomes an error that names the service. Nothing is left blank without words |
+| Watchlist stopped, price alerts page | Rules and history are listed. Open rules show `unknown` with a notice. The create form is replaced by a line saying why, and comes back by itself |
+| Watchlist stopped, "Check rules now" | The alerts service's own message: the check did not finish and unchecked rules stay active |
+| Alerts stopped, dashboard | The watchlist works as usual. The two alert numbers go blank with a notice |
+| The token ran out | Back to sign in, with a line saying so |
 
 ## The images
 
@@ -120,6 +157,7 @@ sh db/check-logins.sh
 | `db` | SQL Server 2022. Its data is in the `db-data` volume and survives `docker compose down` |
 | `db-init` | Runs `db/init.sql` on every start. Creates the `watchlist` and `alerts` databases and one login for each, if they are missing |
 | `watchlist`, `alerts` | The two services, each built from the `Dockerfile` in its own folder |
+| `ui` | A stock nginx image that serves `ui/` as it is. No Dockerfile. It is not a service container |
 
 - No secret is written in this repository, not even a local one. `db/make-secrets.sh` makes them up on your machine. Compose reads them from the volume into `DATABASE_URL` and `TOKEN_SECRET` when a service starts.
 - `db/init.sql` checks before it creates, so running it again changes nothing.
@@ -197,7 +235,7 @@ The background check skips that run and logs one warning. Every rule stays activ
 - `/internal/snapshot` only opens for a one-minute token with the `snapshot` scope, which the alerts service signs with the same secret.
 - Sign-in attempts and registrations are rate limited in the watchlist database, so the limits survive a restart.
 - Tickers and usernames are compared without case, because that is SQL Server's default. The services still store tickers in upper case and usernames in lower case.
-- Each service allows browser requests from the addresses in `CORS_ORIGINS` only.
+- Each service allows browser requests from the addresses in `CORS_ORIGINS` only. The UI keeps the token in `sessionStorage` and sends it in the `Authorization` header, so there is no cookie for another site to ride on.
 
 ## Configuration
 
@@ -254,11 +292,19 @@ ruff check services
 sh db/test-db.sh down
 ```
 
-Verified on 23 November 2026: watchlist 251 tests and alerts 229 tests, both at 100% statement coverage of their measured modules. Coverage below 70% fails the run. As in Assignment 1 the thin route files and `create_app` are left out of the measure and are exercised through the API tests instead.
+Verified on 24 November 2026: watchlist 251 tests and alerts 229 tests, both at 100% statement coverage of their measured modules. Coverage below 70% fails the run. As in Assignment 1 the thin route files and `create_app` are left out of the measure and are exercised through the API tests instead.
 
 No test touches the internet. Finnhub is mocked. The cross-seam tests in `services/alerts/tests` replace the watchlist service with `StubWatchlist`, a real HTTP server on localhost that checks the service token as the real one does. The tests stop it, slow it down and make it answer nonsense to prove the answers in the table above.
 
-CI in `.github/workflows/ci.yml` runs the linter and both test suites on every push and pull request, against a SQL Server container it starts with `db/test-db.sh`. A third job runs `docker compose up --build`, so a failed image build fails the pipeline. It then runs `db/init.sql` a second time, runs `db/check-logins.sh`, checks that both `/health` answers carry the commit and that neither container runs as root. CI never connects to Azure.
+The UI has its own small tests in `ui-tests/`, 21 of them. They run on Node's built-in test runner, version 22.12 or newer, with no `package.json` and nothing to install:
+
+```sh
+node --test "ui-tests/*.test.mjs"
+```
+
+They replace `fetch` with a fake and cover `ui/api.js`: the address comes from `config.js`, every request has a timeout, a read is retried while a service starts, a write is sent once, a 503 the service wrote itself is shown and not retried, and a refused token returns to sign in. The pages themselves have no automated browser test in the repository. On 24 November 2026 they were driven once in a headless browser against both running services, including each row of the table under "What a user sees when something is down".
+
+CI in `.github/workflows/ci.yml` runs the linter and both test suites on every push and pull request, against a SQL Server container it starts with `db/test-db.sh`. A second job runs the UI tests and fails if a file in `ui/` other than `config.js` names a service address. A third job runs `docker compose up --build`, so a failed image build fails the pipeline. It then runs `db/init.sql` a second time, runs `db/check-logins.sh`, checks that both `/health` answers carry the commit, that the UI is served and both addresses in its `config.js` answer, that each service sends the CORS header to the UI's address and to no other, and that neither container runs as root. CI never connects to Azure.
 
 ## Rules of the domain
 
