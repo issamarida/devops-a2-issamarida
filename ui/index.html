@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <!-- Only scripts and styles from these files may run. Text from a service is never run as code. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src *; base-uri 'none'; form-action 'none'">
+  <meta name="referrer" content="no-referrer">
+  <title>Dashboard · Market workspace</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<a class="skip" href="#content">Skip to content</a>
+<aside class="sidebar" aria-label="Workspace navigation">
+  <a class="brand" href="index.html"><span class="brand-mark" aria-hidden="true">↗</span><span>Watchlist<small>Your market workspace</small></span></a>
+  <div class="nav-label">Workspace</div>
+  <nav aria-label="Main navigation">
+    <a class="nav-link current" href="index.html" aria-current="page"><span class="nav-icon" aria-hidden="true">▤</span> Dashboard</a>
+    <a class="nav-link" href="alerts.html"><span class="nav-icon" aria-hidden="true">◎</span> Price alerts</a>
+  </nav>
+  <div class="sidebar-bottom">
+    <div class="mode-card"><strong>Live market data</strong>Trades stream from Finnhub through the watchlist service. Alerts are checked in the background by the alerts service.</div>
+    <div class="account"><span class="avatar" aria-hidden="true" data-avatar></span><span class="account-name"><span data-account-name></span><br>Private account</span><button class="link" type="button" data-sign-out>Sign out</button></div>
+  </div>
+</aside>
+<main id="content">
+  <div class="workspace">
+  <div class="topline"><span>Workspace / Dashboard</span>
+    <span class="chips">
+      <span class="chip" data-market data-state="closed" title="US stock market session"><span class="dot" aria-hidden="true"></span><span data-market-label>US market</span></span>
+      <span class="chip" data-live data-state="connecting" role="status" aria-live="polite"><span class="dot" aria-hidden="true"></span><span data-live-label>Connecting</span><span class="chip-time" data-live-time></span></span>
+    </span></div>
+  <div class="message notice" role="status" data-starting hidden></div>
+  <div class="message" role="status" data-flash hidden></div>
+  <noscript><div class="message error">This page needs JavaScript to load your watchlist.</div></noscript>
+
+  <div class="heading"><div><div class="eyebrow">Your market, at a glance</div><h1>Your watchlist</h1><p>Live prices, today's move and where each stock sits in its range. Updated every second.</p></div><a class="button secondary" href="alerts.html">Manage price alerts <span aria-hidden="true">→</span></a></div>
+  <div class="stats" aria-label="Workspace summary">
+    <div class="stat"><div class="stat-label">Tracked assets <span aria-hidden="true">▤</span></div><span class="stat-value" data-stat="assets">—</span><small>Stocks on your watchlist</small></div>
+    <div class="stat"><div class="stat-label">Up / down today</div><span class="stat-value"><span class="move up" data-stat="up">0</span> <span class="muted">/</span> <span class="move down" data-stat="down">0</span></span><div class="breadth" aria-hidden="true"><span class="b-up" data-breadth="up"></span><span class="b-down" data-breadth="down"></span></div><small>Against the previous close</small></div>
+    <div class="stat"><div class="stat-label">Active alerts <span aria-hidden="true">◎</span></div><span class="stat-value" data-stat="active">—</span><small>Waiting for a price condition</small></div>
+    <div class="stat"><div class="stat-label">Alerts triggered <span aria-hidden="true">↗</span></div><span class="stat-value" data-stat="events">—</span><small>Saved in your history</small></div>
+  </div>
+  <!-- Shown while the alerts service does not answer. The watchlist does not need it. -->
+  <div class="message notice" role="status" data-alerts-down hidden>Price alerts can't be reached right now, so the two alert numbers above are blank. Your watchlist still works.</div>
+
+  <div class="layout">
+    <section class="card" aria-labelledby="assets-heading">
+      <div class="card-head"><div><h2 id="assets-heading">Tracked assets</h2><p>Trades stream live while the market is open. Otherwise the latest quote is shown.</p></div><span class="badge" data-asset-badge>0 assets</span></div>
+      <div class="table-wrap" data-assets hidden><table><thead><tr><th scope="col">Asset</th><th scope="col" class="num">Last price (USD)</th><th scope="col" class="num">Today</th><th scope="col" class="hide-sm">Trend (20 min)</th><th scope="col" class="hide-sm">Day range</th><th scope="col" class="hide-md">52 week range</th><th scope="col" class="hide-md">Your note</th><th scope="col"><span class="hide-sm">Actions</span></th></tr></thead><tbody data-asset-rows></tbody></table></div>
+      <div class="empty" data-no-assets hidden><div class="empty-icon" aria-hidden="true">+</div><h3>Your next idea starts here</h3><p>No assets on the watchlist yet. Add a stock you follow, then set an alert for a price that matters to you.</p><a class="button secondary" href="#add-asset">Add your first asset</a></div>
+      <div class="empty" data-loading><p>Loading your watchlist…</p></div>
+    </section>
+    <aside class="stack" aria-label="Watchlist tools">
+      <section class="card" id="add-asset"><div class="card-head"><div><h2>Add an asset</h2><p>Type a ticker or company name to search US stocks.</p></div></div><div class="card-body"><form class="add" data-add-form>
+        <label>Ticker<input name="ticker" maxlength="10" placeholder="AAPL" autocomplete="off" list="ticker-options" required></label>
+        <datalist id="ticker-options"></datalist>
+        <label>Company name<input name="name" maxlength="100" placeholder="Apple" required></label>
+        <label>Note <span class="hint">Optional · up to 500 characters</span><input name="notes" maxlength="500" placeholder="What are you watching for?"></label>
+        <button type="submit">+ Add to watchlist</button>
+      </form></div></section>
+      <section class="card"><div class="card-head"><h2>Reading the dashboard</h2></div><div class="card-body"><ol class="guide"><li><span><strong>Today</strong>Change against yesterday's close, in green or red with an arrow.</span></li><li><span><strong>Trend</strong>Every live trade from the last 20 minutes. Empty while the market is closed.</span></li><li><span><strong>Ranges</strong>The dark marker is the current price between the low and the high. The small tick is today's open.</span></li></ol></div></section>
+    </aside>
+  </div>
+  <p class="hint">Removing an asset pauses its active rules. Add the same ticker again to resume them.</p>
+  <footer class="footer"><span>Private to your account · All times UTC</span><span>Monitoring only. No trades or investment advice.</span></footer>
+  </div>
+</main>
+<div class="toasts" data-toasts role="status" aria-live="polite"></div>
+
+<!-- One row of the table. dashboard.js copies it for each asset and fills it in. -->
+<template id="asset-row"><tr>
+  <td class="asset"><span class="ticker" data-text="ticker"></span><span class="company" data-text="name"></span><span class="meta" data-meta></span></td>
+  <td class="num" data-field="price">—</td>
+  <td class="num move" data-field="change">—</td>
+  <td class="hide-sm" data-field="spark">—</td>
+  <td class="range hide-sm" data-field="range">—</td>
+  <td class="range hide-md" data-field="year">—</td>
+  <td class="note hide-md"><span data-text="notes"></span><span class="meta" data-text="added"></span></td>
+  <td class="end"><button class="link danger" type="button" data-remove>Remove</button></td>
+</tr></template>
+
+<script src="config.js"></script>
+<script type="module" src="dashboard.js"></script>
+</body>
+</html>
