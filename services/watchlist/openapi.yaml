@@ -1,0 +1,457 @@
+openapi: 3.0.3
+info:
+  title: Watchlist service
+  version: 1.0.0
+  description: |
+    Owns the accounts, each account's tracked assets and the prices from Finnhub.
+
+    Every request body and every answer is JSON. Every error is `{"error": "..."}`.
+    A test in `tests/test_openapi.py` fails when a route in the code is missing
+    here or a path here has no route.
+servers:
+  - url: http://localhost:8001
+    description: docker compose on your own machine
+tags:
+  - name: health
+  - name: accounts
+    description: Create an account and sign in. No token needed.
+  - name: watchlist
+    description: The signed-in account's tracked assets.
+  - name: market
+    description: Prices and company facts for the signed-in account's assets.
+  - name: internal
+    description: Called by the alerts service only, across the seam.
+
+paths:
+  /health:
+    get:
+      tags: [health]
+      summary: Can this service read and write its own database?
+      description: Says nothing about the alerts service. Needs no token.
+      operationId: health
+      responses:
+        "200":
+          description: The service wrote and read a row in its own database.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+              example: { status: ok, db: ok, version: 58e6bea }
+        "503":
+          description: The database could not be written or read.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+              example: { status: error, db: error, version: 58e6bea }
+        default: { $ref: "#/components/responses/OtherError" }
+
+  /auth/register:
+    post:
+      tags: [accounts]
+      summary: Create an account
+      operationId: register
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Credentials" }
+      responses:
+        "201":
+          description: The account exists now. Sign in to get a token.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [username]
+                properties:
+                  username: { type: string, example: alex_invests }
+        "400":
+          description: The username or password breaks a rule, the name is taken or no more accounts are allowed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/TooManyAttempts" }
+        default: { $ref: "#/components/responses/OtherError" }
+
+  /auth/login:
+    post:
+      tags: [accounts]
+      summary: Sign in and get a token
+      operationId: signIn
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Credentials" }
+      responses:
+        "200":
+          description: "A signed token. Send it as `Authorization: Bearer <token>` to both services."
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token, username, expires_in]
+                properties:
+                  token:
+                    type: string
+                    description: A JSON Web Token signed with HS256. Its `sub` is the account ID.
+                  username: { type: string, example: alex_invests }
+                  expires_in:
+                    type: integer
+                    description: Seconds until the token stops working (`TOKEN_SECONDS`).
+                    example: 3600
+        "401":
+          description: Unknown username or wrong password. The answer is the same for both.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/TooManyAttempts" }
+        default: { $ref: "#/components/responses/OtherError" }
+
+  /watchlist:
+    get:
+      tags: [watchlist]
+      summary: List the account's assets
+      operationId: listItems
+      security: [{ userToken: [] }]
+      responses:
+        "200":
+          description: The assets, in ticker order.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Item" }
+        "401": { $ref: "#/components/responses/NotSignedIn" }
+        default: { $ref: "#/components/responses/OtherError" }
+    post:
+      tags: [watchlist]
+      summary: Add an asset
+      operationId: addItem
+      security: [{ userToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ticker, name]
+              properties:
+                ticker:
+                  type: string
+                  description: 1 to 10 letters, digits or dots. Stored in upper case.
+                  example: AAPL
+                name: { type: string, maxLength: 100, example: Apple }
+                notes: { type: string, maxLength: 500, default: "" }
+      responses:
+        "201":
+          description: The asset as stored.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Item" }
+        "400":
+          description: A field breaks a rule, or the account already has `MAX_WATCHLIST_ITEMS` assets.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/NotSignedIn" }
+        "409":
+          description: The ticker is already on this account's watchlist.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/TooManyAttempts" }
+        default: { $ref: "#/components/responses/OtherError" }
+
+  /watchlist/{ticker}:
+    delete:
+      tags: [watchlist]
+      summary: Remove an asset
+      description: Rules for this ticker in the alerts service are not deleted. They turn dormant.
+      operationId: deleteItem
+      security: [{ userToken: [] }]
+      parameters:
+        - $ref: "#/components/parameters/Ticker"
+      responses:
+        "204":
+          description: Removed. No body.
+        "401": { $ref: "#/components/responses/NotSignedIn" }
+        "404":
+          description: The ticker is not on this account's watchlist.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/TooManyAttempts" }
+        default: { $ref: "#/components/responses/OtherError" }
+
+  /api/quotes:
+    get:
+      tags: [market]
+      summary: Live prices for the account's assets
+      operationId: quotes
+      security: [{ userToken: [] }]
+      responses:
+        "200":
+          description: One quote per asset on the watchlist, and the state of the US market.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, quotes, server_time, market]
+                properties:
+                  status:
+                    type: string
+                    enum: [live, connecting, offline]
+                    description: State of the trade stream. `offline` when no `PRICE_API_KEY` is set.
+                  quotes:
+                    type: object
+                    description: Keyed by ticker. `null` when no fresh price is known.
+                    additionalProperties:
+                      allOf: [{ $ref: "#/components/schemas/Quote" }]
+                      nullable: true
+                  server_time:
+                    type: number
+                    description: Seconds since 1970 on the server when this was answered.
+                  market:
+                    allOf: [{ $ref: "#/components/schemas/MarketStatus" }]
+                    nullable: true
+                    description: "`null` when Finnhub did not say."
+        "401": { $ref: "#/components/responses/NotSignedIn" }
+        default: { $ref: "#/components/responses/OtherError" }
+
+  /api/search:
+    get:
+      tags: [market]
+      summary: Ticker suggestions
+      operationId: search
+      security: [{ userToken: [] }]
+      parameters:
+        - name: q
+          in: query
+          required: false
+          description: Part of a ticker or company name. Empty or longer than 20 characters gives no results.
+          schema: { type: string, example: APP }
+      responses:
+        "200":
+          description: Up to eight US stocks that match.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [results]
+                properties:
+                  results:
+                    type: array
+                    maxItems: 8
+                    items:
+                      type: object
+                      required: [symbol, name]
+                      properties:
+                        symbol: { type: string, example: AAPL }
+                        name: { type: string, example: Apple Inc }
+        "401": { $ref: "#/components/responses/NotSignedIn" }
+        default: { $ref: "#/components/responses/OtherError" }
+
+  /api/details/{ticker}:
+    get:
+      tags: [market]
+      summary: Company facts for one asset on the watchlist
+      operationId: details
+      security: [{ userToken: [] }]
+      parameters:
+        - $ref: "#/components/parameters/Ticker"
+      responses:
+        "200":
+          description: The facts, or `null` when Finnhub has none.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ticker, details]
+                properties:
+                  ticker: { type: string, example: AAPL }
+                  details:
+                    allOf: [{ $ref: "#/components/schemas/Details" }]
+                    nullable: true
+        "401": { $ref: "#/components/responses/NotSignedIn" }
+        "404":
+          description: The ticker is not on this account's watchlist.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        default: { $ref: "#/components/responses/OtherError" }
+
+  /internal/snapshot:
+    get:
+      tags: [internal]
+      summary: Who watches what, and the prices asked for
+      description: |
+        The one request the alerts service makes across the seam. It needs a
+        one-minute token with the scope `snapshot`, which the alerts service
+        signs with the shared `TOKEN_SECRET`. A user token is refused.
+      operationId: snapshot
+      security: [{ serviceToken: [] }]
+      parameters:
+        - name: tickers
+          in: query
+          required: false
+          description: Comma-separated tickers whose prices are wanted. At most 200 are read. Leave it out to learn only who watches what.
+          schema: { type: string, example: "AAPL,MSFT" }
+      responses:
+        "200":
+          description: Every account's tickers, and a price for each asked ticker that somebody watches.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Snapshot" }
+              example:
+                owners: { "7": [AAPL, MSFT] }
+                prices: { AAPL: 187.44, MSFT: null }
+        "401":
+          description: No token, or not a valid service token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        default: { $ref: "#/components/responses/OtherError" }
+
+components:
+  securitySchemes:
+    userToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: The token from `POST /auth/login`.
+    serviceToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: A token with `scope` set to `snapshot`, signed by the alerts service.
+
+  parameters:
+    Ticker:
+      name: ticker
+      in: path
+      required: true
+      description: Read without case.
+      schema: { type: string, example: AAPL }
+
+  responses:
+    OtherError:
+      description: Any error not listed for the endpoint, such as 413 for a body over 16 KB or 500 for a fault on our side. The shape is the same as for every other error.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: Something went wrong on our side. Try again. }
+    NotSignedIn:
+      description: No token, or a token that is forged, changed or expired.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: Sign in to continue. }
+    TooManyAttempts:
+      description: Too many attempts in the current window.
+      headers:
+        Retry-After:
+          description: Seconds to wait before trying again.
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: Too many attempts. Please wait and try again. }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string, description: A sentence that can be shown to the user. }
+
+    Health:
+      type: object
+      required: [status, db, version]
+      properties:
+        status: { type: string, enum: [ok, error] }
+        db: { type: string, enum: [ok, error] }
+        version: { type: string, description: The git commit the image was built from (`GIT_SHA`). }
+
+    Credentials:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          description: 3 to 30 letters, digits or underscores. Stored in lower case.
+          example: alex_invests
+        password:
+          type: string
+          format: password
+          description: 15 to 128 characters when creating an account.
+
+    Item:
+      type: object
+      required: [id, ticker, name, notes, added_at]
+      properties:
+        id: { type: integer }
+        ticker: { type: string, example: AAPL }
+        name: { type: string, example: Apple }
+        notes: { type: string }
+        added_at: { type: string, format: date-time, example: "2026-11-24T10:15:00+00:00" }
+
+    Quote:
+      type: object
+      required: [price, change, percent, source, at, previous_close, open, high, low, spark]
+      properties:
+        price: { type: number, example: 187.44 }
+        change: { type: number, nullable: true, description: Against the previous close. }
+        percent: { type: number, nullable: true }
+        source:
+          type: string
+          enum: [live, quote]
+          description: "`live` is a streamed trade, `quote` is Finnhub's latest quote."
+        at: { type: number, description: Seconds since 1970 when the price was observed. }
+        previous_close: { type: number, nullable: true }
+        open: { type: number, nullable: true }
+        high: { type: number, nullable: true }
+        low: { type: number, nullable: true }
+        spark:
+          type: array
+          description: Recent trade prices, oldest first.
+          items: { type: number }
+
+    MarketStatus:
+      type: object
+      required: [open, session, holiday]
+      properties:
+        open: { type: boolean }
+        session: { type: string, nullable: true, example: regular }
+        holiday: { type: string, nullable: true }
+
+    Details:
+      type: object
+      required: [name, industry, exchange, market_cap, year_high, year_low]
+      properties:
+        name: { type: string, example: Apple Inc }
+        industry: { type: string, example: Technology }
+        exchange: { type: string }
+        market_cap: { type: number, nullable: true, description: In US dollars. }
+        year_high: { type: number, nullable: true }
+        year_low: { type: number, nullable: true }
+
+    Snapshot:
+      type: object
+      required: [owners, prices]
+      properties:
+        owners:
+          type: object
+          description: Account ID, as text, to that account's tickers.
+          additionalProperties:
+            type: array
+            items: { type: string }
+        prices:
+          type: object
+          description: Ticker to price. `null` when no fresh price is known.
+          additionalProperties:
+            type: number
+            nullable: true

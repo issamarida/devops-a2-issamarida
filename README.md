@@ -25,7 +25,7 @@ Assignment 2 is in progress. This table is kept honest against the brief.
 | 1a CORS only from the UI's origin, in code | Done. CI checks it on the running containers |
 | 5 CI: lint, tests and coverage per service, against a SQL Server container | Done |
 | 5 CI builds every image | Done. CI also starts the whole system and checks both `/health` answers |
-| 5 CI validates `system.yaml` and each `openapi.yaml` | Not yet |
+| 5 CI validates `system.yaml` and each `openapi.yaml` | Half done. Each `openapi.yaml` is validated. `system.yaml` does not exist yet |
 | 1a SQL Server, one database and one login per service, `DATABASE_URL` | Done. SQLite is gone from the code |
 | 4 Versioned migrations, applied in order at startup and recorded | Done: `001_init.sql` in each service |
 | 4 A migration that changes a table holding data, with evidence on Azure | Not yet. It comes after the first deployment, because the database must hold data first |
@@ -34,7 +34,8 @@ Assignment 2 is in progress. This table is kept honest against the brief.
 | 1a Static UI in `ui/`, addresses from `config.js`, served by nginx locally | Done. Not yet on Azure Storage |
 | 7.5 The UI handles a sleeping service in a designed way | Done locally: a "starting up" notice and retries. Not yet seen on Azure |
 | 5 and 7 CD and the Azure deployment | Not yet |
-| 8a `openapi.yaml` per service and `system.yaml` | Not yet. `system.schema.json` is in place |
+| 8a `openapi.yaml` per service | Done, and the tests hold every answer to it |
+| 8a `system.yaml` | Not yet. It names Azure resources, so it comes with the deployment. `system.schema.json` is in place |
 
 ## Run it with one command
 
@@ -179,6 +180,16 @@ The schema of each service is the list of numbered SQL files in `services/<name>
 
 Every request and answer is JSON. Errors are always `{"error": "..."}`. Apart from `/health` and the two `/auth` endpoints, a request needs the header `Authorization: Bearer <token>` with the token from sign in.
 
+The full description of each API is its OpenAPI 3 document: `services/watchlist/openapi.yaml` and `services/alerts/openapi.yaml`. They list every endpoint with its parameters, request body, status codes and the shape of each answer. The tables below are the short version.
+
+The documents are written by hand and kept true by the tests:
+
+- The routes in the code and the paths in the document must be the same list, in both directions.
+- `tests/openapi_check.py` hooks into the app that the API tests use and compares every answer with the document. A status code or a field that is not written down fails the test that saw it. The API tests see 41 of the 44 documented answers. The other three are `/health` answering 503, which its own test checks against the document, and a rate-limited `DELETE`, which shares its code with the rate-limited `POST`.
+- The real price and market objects are checked against the document too, because the API tests use a fake price source.
+- The alerts tests read the watchlist document and check that the stub they use for the watchlist answers in the shape that document promises. Both sides of the seam are held to one document.
+- CI validates both files against the OpenAPI specification.
+
 **watchlist**
 
 | Method and path | What it does |
@@ -292,7 +303,7 @@ ruff check services
 sh db/test-db.sh down
 ```
 
-Verified on 24 November 2026: watchlist 251 tests and alerts 229 tests, both at 100% statement coverage of their measured modules. Coverage below 70% fails the run. As in Assignment 1 the thin route files and `create_app` are left out of the measure and are exercised through the API tests instead.
+Verified on 24 November 2026: watchlist 268 tests and alerts 247 tests, both at 100% statement coverage of their measured modules. Coverage below 70% fails the run. As in Assignment 1 the thin route files and `create_app` are left out of the measure and are exercised through the API tests instead.
 
 No test touches the internet. Finnhub is mocked. The cross-seam tests in `services/alerts/tests` replace the watchlist service with `StubWatchlist`, a real HTTP server on localhost that checks the service token as the real one does. The tests stop it, slow it down and make it answer nonsense to prove the answers in the table above.
 
@@ -304,7 +315,7 @@ node --test "ui-tests/*.test.mjs"
 
 They replace `fetch` with a fake and cover `ui/api.js`: the address comes from `config.js`, every request has a timeout, a read is retried while a service starts, a write is sent once, a 503 the service wrote itself is shown and not retried, and a refused token returns to sign in. The pages themselves have no automated browser test in the repository. On 24 November 2026 they were driven once in a headless browser against both running services, including each row of the table under "What a user sees when something is down".
 
-CI in `.github/workflows/ci.yml` runs the linter and both test suites on every push and pull request, against a SQL Server container it starts with `db/test-db.sh`. A second job runs the UI tests and fails if a file in `ui/` other than `config.js` names a service address. A third job runs `docker compose up --build`, so a failed image build fails the pipeline. It then runs `db/init.sql` a second time, runs `db/check-logins.sh`, checks that both `/health` answers carry the commit, that the UI is served and both addresses in its `config.js` answer, that each service sends the CORS header to the UI's address and to no other, and that neither container runs as root. CI never connects to Azure.
+CI in `.github/workflows/ci.yml` runs the linter and both test suites on every push and pull request, against a SQL Server container it starts with `db/test-db.sh`. A second job validates each `openapi.yaml` against the OpenAPI specification. A third job runs the UI tests and fails if a file in `ui/` other than `config.js` names a service address. The last job runs `docker compose up --build`, so a failed image build fails the pipeline. It then runs `db/init.sql` a second time, runs `db/check-logins.sh`, checks that both `/health` answers carry the commit, that the UI is served and both addresses in its `config.js` answer, that each service sends the CORS header to the UI's address and to no other, and that neither container runs as root. CI never connects to Azure.
 
 ## Rules of the domain
 

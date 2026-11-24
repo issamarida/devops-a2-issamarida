@@ -1,0 +1,261 @@
+openapi: 3.0.3
+info:
+  title: Alerts service
+  version: 1.0.0
+  description: |
+    Owns the price rules, their trigger history and the background check.
+
+    It holds no accounts. A request carries the token the watchlist service
+    signed at sign in, and this service checks the signature itself. To learn
+    which tickers an account watches and what they cost, it calls
+    `GET /internal/snapshot` on the watchlist service. When that call fails,
+    the answers below say so instead of failing.
+
+    Every request body and every answer is JSON. Every error is `{"error": "..."}`.
+    A test in `tests/test_openapi.py` fails when a route in the code is missing
+    here or a path here has no route.
+servers:
+  - url: http://localhost:8002
+    description: docker compose on your own machine
+tags:
+  - name: health
+  - name: alerts
+    description: The signed-in account's rules and their history.
+
+paths:
+  /health:
+    get:
+      tags: [health]
+      summary: Can this service read and write its own database?
+      description: Says nothing about the watchlist service. Needs no token.
+      operationId: health
+      responses:
+        "200":
+          description: The service wrote and read a row in its own database.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+              example: { status: ok, db: ok, version: 58e6bea }
+        "503":
+          description: The database could not be written or read.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+              example: { status: error, db: error, version: 58e6bea }
+        default: { $ref: "#/components/responses/OtherError" }
+
+  /alerts:
+    get:
+      tags: [alerts]
+      summary: List the account's rules with their status
+      description: |
+        Calls the watchlist service to tell `active` from `dormant`. When it
+        does not answer, this still answers 200: open rules get the status
+        `unknown` and `watchlist_available` is `false`.
+      operationId: listRules
+      security: [{ userToken: [] }]
+      responses:
+        "200":
+          description: The rules, oldest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rules, watchlist_available]
+                properties:
+                  rules:
+                    type: array
+                    items: { $ref: "#/components/schemas/Rule" }
+                  watchlist_available:
+                    type: boolean
+                    description: "`false` when the watchlist service did not answer."
+        "401": { $ref: "#/components/responses/NotSignedIn" }
+        default: { $ref: "#/components/responses/OtherError" }
+    post:
+      tags: [alerts]
+      summary: Create a rule
+      description: The ticker must be on the account's watchlist, which is checked with the watchlist service.
+      operationId: addRule
+      security: [{ userToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ticker, condition, threshold]
+              properties:
+                ticker: { type: string, description: "Stored in upper case.", example: AAPL }
+                condition: { type: string, enum: [above, below] }
+                threshold:
+                  type: number
+                  description: A price in US dollars, greater than 0.
+                  example: 150
+      responses:
+        "201":
+          description: The rule as stored.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Rule" }
+        "400":
+          description: A field breaks a rule, the ticker is not on the watchlist or the account already has `MAX_ALERT_RULES` rules.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/NotSignedIn" }
+        "503":
+          description: The watchlist service did not answer, so the ticker could not be checked. Nothing was saved.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example:
+                error: The watchlist can't be reached right now, so the rule was not saved. Try again in a moment.
+        default: { $ref: "#/components/responses/OtherError" }
+
+  /alerts/{rule_id}:
+    delete:
+      tags: [alerts]
+      summary: Delete a rule
+      description: Its trigger history stays. Uses this service's own data only.
+      operationId: deleteRule
+      security: [{ userToken: [] }]
+      parameters:
+        - name: rule_id
+          in: path
+          required: true
+          schema: { type: integer, minimum: 0 }
+      responses:
+        "204":
+          description: Deleted. No body.
+        "401": { $ref: "#/components/responses/NotSignedIn" }
+        "404":
+          description: The account has no rule with this ID.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        default: { $ref: "#/components/responses/OtherError" }
+
+  /alerts/events:
+    get:
+      tags: [alerts]
+      summary: The trigger history
+      description: Uses this service's own data only, so it answers when the watchlist is down.
+      operationId: listEvents
+      security: [{ userToken: [] }]
+      responses:
+        "200":
+          description: The latest 100 events, newest first, and how many there are in all.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events, count]
+                properties:
+                  events:
+                    type: array
+                    maxItems: 100
+                    items: { $ref: "#/components/schemas/Event" }
+                  count: { type: integer, description: "Every event of the account, not only the 100 listed." }
+        "401": { $ref: "#/components/responses/NotSignedIn" }
+        default: { $ref: "#/components/responses/OtherError" }
+
+  /alerts/evaluate:
+    post:
+      tags: [alerts]
+      summary: Check the account's active rules now
+      description: |
+        Asks the watchlist service for the current prices. A rule whose price
+        is strictly past its threshold fires once: it is deactivated and an
+        event is written in the same transaction. No request body.
+      operationId: evaluate
+      security: [{ userToken: [] }]
+      responses:
+        "200":
+          description: The rules that fired in this check.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [fired, unavailable_tickers]
+                properties:
+                  fired:
+                    type: array
+                    items: { $ref: "#/components/schemas/Rule" }
+                  unavailable_tickers:
+                    type: array
+                    description: Tickers with no fresh price. Their rules stay active.
+                    items: { type: string }
+        "401": { $ref: "#/components/responses/NotSignedIn" }
+        "503":
+          description: The watchlist service did not answer, so the check did not finish. No rule fires on a price nobody could confirm.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        default: { $ref: "#/components/responses/OtherError" }
+
+components:
+  securitySchemes:
+    userToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: The token from `POST /auth/login` on the watchlist service.
+
+  responses:
+    OtherError:
+      description: Any error not listed for the endpoint, such as 413 for a body over 16 KB or 500 for a fault on our side. The shape is the same as for every other error.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: Something went wrong on our side. Try again. }
+    NotSignedIn:
+      description: No token, or a token that is forged, changed or expired.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: Sign in to continue. }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string, description: A sentence that can be shown to the user. }
+
+    Health:
+      type: object
+      required: [status, db, version]
+      properties:
+        status: { type: string, enum: [ok, error] }
+        db: { type: string, enum: [ok, error] }
+        version: { type: string, description: The git commit the image was built from (`GIT_SHA`). }
+
+    Rule:
+      type: object
+      required: [id, ticker, condition, threshold, created_at, status]
+      properties:
+        id: { type: integer }
+        ticker: { type: string, example: AAPL }
+        condition: { type: string, enum: [above, below] }
+        threshold: { type: number, example: 150 }
+        created_at: { type: string, format: date-time, example: "2026-11-24T10:15:00+00:00" }
+        status:
+          type: string
+          enum: [active, dormant, fired, unknown]
+          description: |
+            `active`: checked while the ticker is on the watchlist.
+            `dormant`: the ticker was removed from the watchlist.
+            `fired`: it triggered once and is no longer checked.
+            `unknown`: the watchlist service did not answer.
+
+    Event:
+      type: object
+      required: [id, rule_id, ticker, condition, threshold, observed_price, triggered_at]
+      properties:
+        id: { type: integer }
+        rule_id: { type: integer, nullable: true, description: "`null` once the rule is deleted." }
+        ticker: { type: string, example: AAPL }
+        condition: { type: string, enum: [above, below] }
+        threshold: { type: number, example: 150 }
+        observed_price: { type: number, example: 151.2 }
+        triggered_at: { type: string, format: date-time, example: "2026-11-24T10:15:00+00:00" }

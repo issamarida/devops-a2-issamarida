@@ -9,9 +9,11 @@ from urllib.parse import parse_qs, urlsplit
 import jwt
 import pytest
 
-from app import MIGRATIONS
+from app import MIGRATIONS, create_app
+from app.config import load_config
 from app.db import get_connection
 from app.migrations import apply_migrations
+from openapi_check import watch
 
 # Not a real secret. It only signs tokens inside a test run.
 TEST_TOKEN_SECRET = "test-only-token-secret-not-a-real-one"
@@ -171,3 +173,20 @@ def stub():
     stub = StubWatchlist()
     yield stub
     stub.stop()
+
+
+@pytest.fixture
+def app(stub, monkeypatch, database_url):
+    """The service with the stub in place of the watchlist and a short timeout."""
+    monkeypatch.setenv("WATCHLIST_URL", stub.url)
+    monkeypatch.setenv("WATCHLIST_TIMEOUT_SECONDS", "0.3")
+    app = create_app(load_config())
+    # Every answer this app gives in a test is compared with openapi.yaml.
+    problems = watch(app)
+    yield app
+    assert not problems, "openapi.yaml does not describe these answers:\n" + "\n".join(problems)
+
+
+@pytest.fixture
+def client(app):
+    return app.test_client()

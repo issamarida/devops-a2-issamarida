@@ -39,7 +39,8 @@ def create_app(config: Config, *, price_source=None) -> Flask:
     # Bring the schema up to date before the first request. Only new files run.
     apply_migrations(config.database_url, MIGRATIONS)
 
-    app = Flask(__name__)
+    # This service only answers its API. Without this Flask adds a /static route.
+    app = Flask(__name__, static_folder=None)
 
     # First, so its line is written last and shows the final status.
     install_request_log(app)

@@ -11,6 +11,7 @@ from app.market.cache import CachedPriceSource
 from app.market.finnhub import FinnhubSource, Quote
 from app.market.stream import MAX_POINTS, STREAM_URL, FinnhubStream, LivePrices, Trade
 from app.ports import PriceUnavailable
+from openapi_check import DOCUMENT, fits
 
 FAKE_KEY = "fake-key-for-tests"
 
@@ -344,6 +345,26 @@ def test_snapshot_prefers_live_trade_and_computes_the_day_change():
         },
     }
     assert stream.followed == [["AAPL"]]
+
+
+def test_the_real_snapshot_has_the_shape_openapi_describes():
+    # The API tests use a fake price source. This holds the real one to the document.
+    stream = FakeStream()
+    stream.trades["AAPL"] = Trade(110.0, 999, received=999)
+    quotes = FakeQuotes({
+        "AAPL": Quote(105.0, 100.0, 900, open=101.0, high=108.0, low=99.0),
+        "MSFT": Quote(400.0, None, 900),
+    })
+
+    body = live(stream, quotes, FakeClock(1_000)).snapshot(["AAPL", "MSFT", "NONE"])
+    body["market"] = None  # GET /api/quotes adds the market state
+
+    # A streamed trade, a plain quote with gaps and a ticker with no price at all.
+    assert body["quotes"]["AAPL"]["source"] == "live"
+    assert body["quotes"]["MSFT"]["change"] is None
+    assert body["quotes"]["NONE"] is None
+    answer = DOCUMENT["paths"]["/api/quotes"]["get"]["responses"]["200"]
+    assert fits(answer["content"]["application/json"]["schema"], body) == []
 
 
 def test_snapshot_uses_the_quote_when_no_trade_has_arrived():

@@ -1,6 +1,7 @@
 # Runs on every push and every pull request (Assignment 2 brief, section 5).
 # Each service is installed, linted and tested on its own, from its own folder.
 # The tests run against a SQL Server container started from docker-compose.yml.
+# The documents job checks each openapi.yaml against the OpenAPI specification.
 # The ui job tests the scripts of the static UI.
 # The compose job builds both images and starts the whole system, UI included.
 # Nothing here connects to Azure, so CI never wakes or changes the Azure databases.
@@ -56,6 +57,28 @@ jobs:
         if: failure()
         working-directory: .
         run: docker compose -p stocks-test logs db
+
+  documents:
+    name: Validate the OpenAPI documents
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+      # A tool of the pipeline, not a dependency of a service, so it is pinned
+      # here and not in a requirements.txt.
+      - name: Install the validator
+        run: pip install openapi-spec-validator==0.9.0
+      # Brief section 5: each openapi.yaml is checked against the OpenAPI 3
+      # specification. This proves the document is well formed. That it matches
+      # the code is proved in the test job, where every answer in the API tests
+      # is compared with it (tests/openapi_check.py in each service).
+      - name: Each openapi.yaml follows the OpenAPI specification
+        run: |
+          for service in watchlist alerts; do
+            openapi-spec-validator "services/$service/openapi.yaml"
+          done
 
   ui:
     name: Test the static UI
