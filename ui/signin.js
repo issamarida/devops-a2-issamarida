@@ -45,7 +45,12 @@ async function submit(event) {
   try {
     // Creating an account is sent once only. Sending it twice could report a
     // name as taken that this very request had just created.
-    if (registering) await call("watchlist", "/auth/register", { method: "POST", body });
+    if (registering) {
+      await call("watchlist", "/auth/register", { method: "POST", body });
+      // The account exists now. If the sign in below fails, pressing the
+      // button again must sign in, not try to create the account twice.
+      setMode(false);
+    }
     // Signing in changes nothing, so it is safe to try again while the
     // service wakes up.
     const answer = await call("watchlist", "/auth/login", {

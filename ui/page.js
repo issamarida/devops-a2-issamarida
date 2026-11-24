@@ -85,10 +85,18 @@ const loops = [];
 
 const isIdle = () => Date.now() - lastActive > IDLE_MS;
 
+// Say on the page that the numbers stopped moving, and why.
+function showPaused(paused) {
+  document.querySelector("[data-paused]").hidden = !paused;
+}
+
 function noteActivity() {
   const wasIdle = isIdle();
   lastActive = Date.now();
-  if (wasIdle) for (const run of loops) run();
+  if (wasIdle) {
+    showPaused(false);
+    for (const run of loops) run();
+  }
 }
 
 for (const name of ["pointermove", "pointerdown", "keydown", "scroll"]) {
@@ -104,7 +112,11 @@ export function keepFresh(job, everyMs) {
 
   async function run() {
     clearTimeout(timer);
-    if (busy || document.hidden || isIdle()) return;
+    if (busy || document.hidden) return;
+    if (isIdle()) {
+      showPaused(true);
+      return;
+    }
     busy = true;
     try {
       await job();

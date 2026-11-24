@@ -77,7 +77,7 @@ The UI is plain HTML, CSS and JavaScript in `ui/`. There is no framework and no 
 - The dashboard takes its assets and prices from the watchlist service and its two alert numbers from the alerts service. The alerts page takes rules and history from alerts, and the ticker list and prices from the watchlist. Creating a rule is the flow that crosses the seam on the server side.
 - The sign-in token is kept in `sessionStorage`, so it lasts as long as the browser tab. A page without a token goes to sign in.
 - Each page carries a Content-Security-Policy that only lets its own scripts and styles run. Text from a service is always written as text and never as HTML.
-- A page asks again every second for prices and every five seconds for alerts. It stops when the tab is hidden and after five minutes without a key or pointer movement, so a forgotten tab does not keep the Azure containers and databases awake.
+- A page asks again every second for prices and every five seconds for alerts. It stops when the tab is hidden and after five minutes without a key or pointer movement, so a forgotten tab does not keep the Azure containers and databases awake. A notice says the updates are paused, and any movement continues them.
 
 ### What a user sees when something is down
 
