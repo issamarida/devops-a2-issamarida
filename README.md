@@ -299,7 +299,7 @@ No test touches the internet. Finnhub is mocked. The cross-seam tests in `servic
 The UI has its own small tests in `ui-tests/`, 21 of them. They run on Node's built-in test runner, version 22.12 or newer, with no `package.json` and nothing to install:
 
 ```sh
-node --test ui-tests/
+node --test "ui-tests/*.test.mjs"
 ```
 
 They replace `fetch` with a fake and cover `ui/api.js`: the address comes from `config.js`, every request has a timeout, a read is retried while a service starts, a write is sent once, a 503 the service wrote itself is shown and not retried, and a refused token returns to sign in. The pages themselves have no automated browser test in the repository. On 24 November 2026 they were driven once in a headless browser against both running services, including each row of the table under "What a user sees when something is down".

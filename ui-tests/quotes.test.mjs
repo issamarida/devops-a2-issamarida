@@ -2,7 +2,7 @@
 // from a rule's threshold. It must agree with the alerts service, where a
 // price equal to the threshold does not fire a rule.
 //
-// Run with:  node --test ui-tests/
+// Run with:  node --test "ui-tests/*.test.mjs"
 
 import assert from "node:assert/strict";
 import { test } from "node:test";

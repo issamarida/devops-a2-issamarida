@@ -1,6 +1,6 @@
 // Tests for ui/api.js, the script every page uses to reach the two services.
 //
-// Run with:  node --test ui-tests/
+// Run with:  node --test "ui-tests/*.test.mjs"
 //
 // They need Node 22.12 or newer and nothing else: no package.json and no
 // install. No test touches the network. fetch is replaced by a fake that

@@ -69,7 +69,7 @@ jobs:
       # The tests cover ui/api.js: timeouts, the retries while a service starts
       # up and what happens when a service answers with an error.
       - name: Test the UI scripts
-        run: node --test ui-tests/
+        run: node --test "ui-tests/*.test.mjs"
       # Brief section 1a: the services' addresses are configuration. If a page
       # or script names one, this step fails and prints the line. The one web
       # address allowed is the fixed name of the SVG format, which is not a server.
