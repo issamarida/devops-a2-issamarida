@@ -9,6 +9,7 @@ from app.db import get_connection
 from app.migrations import apply_migrations
 from app.watchlist.repository import WatchlistRepository
 from app.watchlist.service import WatchlistService
+from openapi_check import watch
 
 # Not a real secret. It only signs tokens inside a test run.
 TEST_TOKEN_SECRET = "test-only-token-secret-not-a-real-one"
@@ -109,7 +110,11 @@ class FakePrices:
 
     def snapshot(self, tickers):
         self.asked.append(list(tickers))
-        quote = {"price": self.price, "change": None, "percent": None, "source": "live", "at": 1.0}
+        # The same fields the real LivePrices.snapshot sends.
+        quote = {
+            "price": self.price, "change": None, "percent": None, "source": "live", "at": 1.0,
+            "previous_close": None, "open": None, "high": None, "low": None, "spark": [],
+        }
         return {
             "status": "live",
             "server_time": 1.0,
@@ -124,7 +129,11 @@ def prices():
 
 @pytest.fixture
 def app(prices, database_url):
-    return create_app(load_config(), price_source=prices)
+    app = create_app(load_config(), price_source=prices)
+    # Every answer this app gives in a test is compared with openapi.yaml.
+    problems = watch(app)
+    yield app
+    assert not problems, "openapi.yaml does not describe these answers:\n" + "\n".join(problems)
 
 
 @pytest.fixture

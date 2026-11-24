@@ -8,6 +8,7 @@ import pytest
 from app.config import load_env_file
 from app.market.finnhub import API_URL, FinnhubSource, Quote
 from app.market.info import MarketInfo
+from openapi_check import DOCUMENT, fits
 
 FAKE_KEY = "fake-key-for-tests"
 
@@ -133,6 +134,29 @@ def test_unknown_ticker_has_no_details():
 
 
 # The optional .env file
+
+
+def test_market_answers_have_the_shapes_openapi_describes():
+    # The API tests run without a Finnhub key, so they only ever see empty
+    # answers. This holds answers with real content to the document.
+    info = MarketInfo(FinnhubSource(FAKE_KEY))
+    status = {"isOpen": False, "session": None, "holiday": "Thanksgiving"}
+    found = {"result": [{"symbol": "AAPL", "description": "APPLE INC"}]}
+    profile = {"name": "Apple Inc", "finnhubIndustry": "Technology", "exchange": "NASDAQ"}
+    with answers(status, found, profile, {"metric": {"52WeekHigh": 345.3}}):
+        market = info.market_status()
+        results = info.search("aapl")
+        details = info.details("AAPL")
+
+    schemas = DOCUMENT["components"]["schemas"]
+    assert fits(schemas["MarketStatus"], market) == []
+    assert fits(schemas["Details"], details) == []
+    paths = DOCUMENT["paths"]
+    search = paths["/api/search"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+    assert fits(search, {"results": results}) == []
+    one = paths["/api/details/{ticker}"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+    assert fits(one, {"ticker": "AAPL", "details": details}) == []
+    assert fits(one, {"ticker": "AAPL", "details": None}) == []
 
 
 def test_env_file_fills_only_unset_variables(tmp_path, monkeypatch):

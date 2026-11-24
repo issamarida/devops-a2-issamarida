@@ -7,5 +7,6 @@ line-length = 100
 select = ["E4", "E7", "E9", "F", "I", "B"]
 
 [lint.isort]
-# Each service's own package is called "app". "conftest" is the test helpers.
-known-first-party = ["app", "conftest"]
+# Each service's own package is called "app". "conftest" and "openapi_check"
+# are the test helpers.
+known-first-party = ["app", "conftest", "openapi_check"]

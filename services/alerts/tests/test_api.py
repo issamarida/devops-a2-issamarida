@@ -9,26 +9,12 @@ import time
 
 import pytest
 
-from app import create_app
-from app.config import load_config
 from conftest import user_headers
 
 UI_ORIGIN = "http://localhost:8080"
 ALICE = user_headers(7, "alice")
 BOB = user_headers(8, "bob")
 RULE = {"ticker": "AAPL", "condition": "above", "threshold": 190}
-
-
-@pytest.fixture
-def app(stub, monkeypatch, database_url):
-    monkeypatch.setenv("WATCHLIST_URL", stub.url)
-    monkeypatch.setenv("WATCHLIST_TIMEOUT_SECONDS", "0.3")
-    return create_app(load_config())
-
-
-@pytest.fixture
-def client(app):
-    return app.test_client()
 
 
 def statuses(client, headers=ALICE):
