@@ -3,8 +3,9 @@
 # Two service containers, watchlist and alerts, each built from its own
 # Dockerfile, and one SQL Server container with one database and one login per
 # service (brief section 1a). secrets and db-init are one-off helpers that run
-# and exit. The static UI is not here yet.
+# and exit. ui serves the static files in ui/ and is not a service container.
 #
+#     the app    http://localhost:8080
 #     watchlist  http://localhost:8001
 #     alerts     http://localhost:8002
 
@@ -140,6 +141,23 @@ services:
         - python
         - -c
         - import urllib.request; urllib.request.urlopen("http://localhost:8002/health", timeout=2)
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  # The static UI: the files in ui/ served as they are by a stock nginx image.
+  # No Dockerfile and no build. The browser loads the pages from here and then
+  # calls both services itself, at the addresses in ui/config.js. Nothing here
+  # waits for the services, because a static page does not need them to load.
+  ui:
+    image: nginx:1.30.8-alpine@sha256:6437a63b5c529f0e06162b3f593c0154cff6fa2ea0f94fd7c27928cb399e022d
+    volumes:
+      - ./ui:/usr/share/nginx/html:ro
+    ports:
+      # The address both services allow in CORS_ORIGINS above.
+      - "127.0.0.1:8080:80"
+    healthcheck:
+      test: [CMD, wget, --quiet, --output-document=/dev/null, "http://127.0.0.1/config.js"]
       interval: 5s
       timeout: 3s
       retries: 12
