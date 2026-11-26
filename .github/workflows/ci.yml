@@ -1,7 +1,7 @@
 # Runs on every push and every pull request (Assignment 2 brief, section 5).
 # Each service is installed, linted and tested on its own, from its own folder.
 # The tests run against a SQL Server container started from docker-compose.yml.
-# The documents job checks system.yaml and each openapi.yaml.
+# The documents job checks system.yaml, each openapi.yaml and infra/main.bicep.
 # The ui job tests the scripts of the static UI.
 # The compose job builds both images and starts the whole system, UI included.
 # Nothing here connects to Azure, so CI never wakes or changes the Azure databases.
@@ -59,7 +59,7 @@ jobs:
         run: docker compose -p stocks-test logs db
 
   documents:
-    name: Validate system.yaml and the OpenAPI documents
+    name: Validate system.yaml, the OpenAPI documents and the Bicep file
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -83,6 +83,16 @@ jobs:
           for service in watchlist alerts; do
             openapi-spec-validator "services/$service/openapi.yaml"
           done
+      # Compiles the file the CD workflow deploys and runs Bicep's linter on it.
+      # It needs no Azure sign in. The az CLI is already on the runner and
+      # downloads Bicep itself.
+      - name: infra/main.bicep compiles and passes the linter
+        run: |
+          az bicep install
+          az bicep lint --file infra/main.bicep --diagnostics-format sarif > lint.sarif
+          az bicep build --file infra/main.bicep --stdout > /dev/null
+          # Any finding at all, a warning included, fails the job.
+          jq --exit-status '.runs[0].results | length == 0' lint.sarif || { cat lint.sarif; exit 1; }
 
   ui:
     name: Test the static UI
