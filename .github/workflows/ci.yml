@@ -1,15 +1,19 @@
 # Runs on every push and every pull request (Assignment 2 brief, section 5).
 # Each service is installed, linted and tested on its own, from its own folder.
 # The tests run against a SQL Server container started from docker-compose.yml.
-# The documents job checks each openapi.yaml against the OpenAPI specification.
+# The documents job checks system.yaml, each openapi.yaml and infra/main.bicep.
 # The ui job tests the scripts of the static UI.
 # The compose job builds both images and starts the whole system, UI included.
 # Nothing here connects to Azure, so CI never wakes or changes the Azure databases.
 name: CI
 
 on:
+  # On main, cd.yml runs this file first and deploys only if it passes, so a
+  # push to main would otherwise run CI twice.
   push:
+    branches-ignore: [main]
   pull_request:
+  workflow_call:
 
 # The workflow only reads the code. It gets no other access to the repository.
 permissions:
@@ -59,17 +63,21 @@ jobs:
         run: docker compose -p stocks-test logs db
 
   documents:
-    name: Validate the OpenAPI documents
+    name: Validate system.yaml, the OpenAPI documents and the Bicep file
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.14"
-      # A tool of the pipeline, not a dependency of a service, so it is pinned
-      # here and not in a requirements.txt.
-      - name: Install the validator
-        run: pip install openapi-spec-validator==0.9.0
+      # Tools of the pipeline, not dependencies of a service, so they are
+      # pinned here and not in a requirements.txt.
+      - name: Install the validators
+        run: pip install openapi-spec-validator==0.9.0 check-jsonschema==0.39.0
+      # Brief section 8a. That the file also matches the code is proved in the
+      # test job, by tests/test_system_yaml.py in each service.
+      - name: system.yaml follows system.schema.json
+        run: check-jsonschema --schemafile system.schema.json system.yaml
       # Brief section 5: each openapi.yaml is checked against the OpenAPI 3
       # specification. This proves the document is well formed. That it matches
       # the code is proved in the test job, where every answer in the API tests
@@ -79,6 +87,16 @@ jobs:
           for service in watchlist alerts; do
             openapi-spec-validator "services/$service/openapi.yaml"
           done
+      # Compiles the file the CD workflow deploys and runs Bicep's linter on it.
+      # It needs no Azure sign in. The az CLI is already on the runner and
+      # downloads Bicep itself.
+      - name: infra/main.bicep compiles and passes the linter
+        run: |
+          az bicep install
+          az bicep lint --file infra/main.bicep --diagnostics-format sarif > lint.sarif
+          az bicep build --file infra/main.bicep --stdout > /dev/null
+          # Any finding at all, a warning included, fails the job.
+          jq --exit-status '.runs[0].results | length == 0' lint.sarif || { cat lint.sarif; exit 1; }
 
   ui:
     name: Test the static UI

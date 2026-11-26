@@ -19,6 +19,7 @@ VARIABLES = [
     "MAX_WATCHLIST_ITEMS",
     "QUOTE_REQUESTS_PER_MINUTE",
     "LIVE_SYMBOL_LIMIT",
+    "TRUSTED_PROXIES",
 ]
 
 
@@ -42,6 +43,7 @@ def test_defaults_when_nothing_is_set():
     assert config.token_seconds == 3600
     assert config.cors_origins == ["http://localhost:8080"]
     assert config.git_sha == "dev"
+    assert config.trusted_proxies == 0
 
 
 def test_environment_variables_override_the_defaults(monkeypatch):
@@ -167,3 +169,15 @@ def test_a_bad_database_url_is_never_repeated_in_the_error(monkeypatch):
         load_config()
 
     assert "not-a-password" not in str(error.value)
+
+
+@pytest.mark.parametrize("value", ["-1", "6"])
+def test_trusted_proxies_must_be_between_0_and_5(monkeypatch, value):
+    monkeypatch.setenv("TRUSTED_PROXIES", value)
+    with pytest.raises(ValueError, match="TRUSTED_PROXIES"):
+        load_config()
+
+
+def test_trusted_proxies_is_read(monkeypatch):
+    monkeypatch.setenv("TRUSTED_PROXIES", "1")
+    assert load_config().trusted_proxies == 1

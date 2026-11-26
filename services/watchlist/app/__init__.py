@@ -8,9 +8,10 @@ from pathlib import Path
 
 from flask import Flask, g
 from flask_cors import CORS
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from app.config import Config
-from app.db import DatabaseError, check_database
+from app.db import DatabaseError, check_database, wait_for_database
 from app.errors import install_error_handlers
 from app.market.cache import CachedPriceSource
 from app.market.finnhub import FinnhubSource
@@ -36,11 +37,21 @@ MIGRATIONS = Path(__file__).parent.parent / "migrations"
 
 
 def create_app(config: Config, *, price_source=None) -> Flask:
+    # On Azure the database may be paused. Wait until it answers.
+    tries = wait_for_database(config.database_url)
+    if tries > 1:
+        logger.info("The database answered after %d tries", tries)
     # Bring the schema up to date before the first request. Only new files run.
     apply_migrations(config.database_url, MIGRATIONS)
 
     # This service only answers its API. Without this Flask adds a /static route.
     app = Flask(__name__, static_folder=None)
+    # Behind a proxy every request seems to come from the proxy, so the sign-in
+    # limits per address would count all users together. ProxyFix takes the
+    # address the trusted proxy saw from X-Forwarded-For. A value the browser
+    # wrote there itself is ignored, because only the last entries are trusted.
+    if config.trusted_proxies:
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=config.trusted_proxies)
 
     # First, so its line is written last and shows the final status.
     install_request_log(app)

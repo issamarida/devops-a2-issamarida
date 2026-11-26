@@ -1,0 +1,166 @@
+# Runs on every push to main, which only happens when a pull request is merged
+# (brief sections 5 and 9). It runs the whole of CI again on this exact
+# commit, and nothing reaches Azure unless CI passes.
+#
+#   ci      .github/workflows/ci.yml, called as it is
+#   images  builds both images and pushes them to GHCR, tagged with the commit SHA
+#   deploy  signs in to Azure as the pipeline's identity, deploys infra/main.bicep
+#           with the new images, uploads ui/ with its config.js and waits for
+#           both services to answer /health with this commit
+#
+# The Azure resources it deploys into were made once by infra/setup.sh.
+name: CD
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Two merges close together deploy one after the other, never at the same time.
+concurrency:
+  group: deploy-azure
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io/${{ github.repository_owner }}
+
+jobs:
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+
+  images:
+    name: Push the ${{ matrix.service }} image
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Lets the job's own GITHUB_TOKEN push to this account's packages.
+      packages: write
+    strategy:
+      matrix:
+        service: [watchlist, alerts]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Sign in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io --username "${{ github.actor }}" --password-stdin
+      # Tagged with the commit SHA only, so every deploy names one exact build.
+      # --provenance=false leaves out the build record BuildKit would add,
+      # which Container Apps cannot pull (course guide, step 8). The label
+      # links the package to this repository on GitHub.
+      - name: Build the image
+        run: >-
+          docker build --provenance=false
+          --build-arg "GIT_SHA=$GITHUB_SHA"
+          --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY"
+          --tag "$REGISTRY/${{ matrix.service }}:$GITHUB_SHA"
+          services/${{ matrix.service }}
+      - name: Push it
+        run: docker push "$REGISTRY/${{ matrix.service }}:$GITHUB_SHA"
+
+  deploy:
+    name: Deploy to Azure
+    needs: images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Lets azure/login ask GitHub for a signed token that says "a run on main
+      # of this repository". Azure trusts that token instead of a password.
+      id-token: write
+    env:
+      RESOURCE_GROUP: ${{ vars.RESOURCE_GROUP }}
+      UI_STORAGE: ${{ vars.UI_STORAGE }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # OpenID Connect: no Azure password or key is stored anywhere. These
+      # three IDs only name the identity, the directory and the subscription.
+      - name: Sign in to Azure as iaiarida-ieu2024-github
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      # infra/main.bicepparam reads every value from these variables, so the
+      # secrets never appear on a command line. Container Apps keeps them as
+      # its own secrets. Deploying the same file again changes only the images.
+      - name: Deploy both services (infra/main.bicep)
+        env:
+          PREFIX: ${{ vars.PREFIX }}
+          WATCHLIST_IMAGE: ${{ env.REGISTRY }}/watchlist:${{ github.sha }}
+          ALERTS_IMAGE: ${{ env.REGISTRY }}/alerts:${{ github.sha }}
+          WATCHLIST_DB_PASSWORD: ${{ secrets.WATCHLIST_DB_PASSWORD }}
+          ALERTS_DB_PASSWORD: ${{ secrets.ALERTS_DB_PASSWORD }}
+          TOKEN_SECRET: ${{ secrets.TOKEN_SECRET }}
+          PRICE_API_KEY: ${{ secrets.PRICE_API_KEY }}
+        run: |
+          az deployment group create --resource-group "$RESOURCE_GROUP" \
+            --name "cd-$GITHUB_RUN_NUMBER" --parameters infra/main.bicepparam --output none
+          outputs=$(az deployment group show --resource-group "$RESOURCE_GROUP" \
+            --name "cd-$GITHUB_RUN_NUMBER" --query properties.outputs --output json)
+          for name in watchlistUrl alertsUrl publicUrl; do
+            echo "$name=$(echo "$outputs" | jq --raw-output ".$name.value" | sed 's|/$||')" >> "$GITHUB_ENV"
+          done
+      # The only file of the UI that changes between machines (brief section 1a).
+      - name: Write ui/config.js with the services' addresses
+        run: |
+          cat > ui/config.js <<EOF
+          // Written by the CD workflow for commit $GITHUB_SHA. Do not edit on Azure.
+          window.APP_CONFIG = { watchlistUrl: "$watchlistUrl", alertsUrl: "$alertsUrl" };
+          EOF
+          cat ui/config.js
+      # The identity has Storage Blob Data Contributor on this one account, so
+      # it signs in with its token and needs no storage key. "no-cache" makes
+      # browsers ask whether a file changed, so a deploy shows at once.
+      - name: Upload ui/ to the static website
+        run: |
+          az storage blob upload-batch --account-name "$UI_STORAGE" --auth-mode login \
+            --destination '$web' --source ui --overwrite \
+            --content-cache-control "no-cache" --output none
+      # The first request after a deploy starts each container, which may find
+      # its database paused. Resuming takes up to about a minute, so this
+      # waits up to eight minutes. It passes only when a service says its own
+      # database works and reports this commit, so an old revision cannot pass.
+      - name: Both services answer /health with this commit
+        run: |
+          deadline=$((SECONDS + 480))
+          for url in "$watchlistUrl" "$alertsUrl"; do
+            until curl --silent --fail --max-time 60 "$url/health" > health.json \
+                && grep --quiet "\"version\":\"$GITHUB_SHA\"" health.json; do
+              if [ "$SECONDS" -gt "$deadline" ]; then
+                echo "$url/health did not answer 200 with this commit in time."
+                exit 1
+              fi
+              echo "Waiting for $url ..."
+              sleep 10
+            done
+            echo "$url/health: $(cat health.json)"
+          done
+      - name: The live UI is served, with this config.js
+        run: |
+          curl --silent --fail "$publicUrl/" | grep --quiet "<title>Dashboard"
+          curl --silent --fail "$publicUrl/config.js" | grep --quiet "$GITHUB_SHA"
+          echo "Live at $publicUrl"
+      # CORS is in the service code (brief section 1a). A page from the live
+      # UI's address may read the answers. A page from anywhere else may not.
+      - name: Each service accepts browser requests from the live UI only
+        run: |
+          for url in "$watchlistUrl" "$alertsUrl"; do
+            curl --silent --output /dev/null --dump-header ui.txt \
+              --header "Origin: $publicUrl" "$url/health"
+            grep --ignore-case "^access-control-allow-origin: $publicUrl" ui.txt
+            curl --silent --output /dev/null --dump-header other.txt \
+              --header "Origin: https://example.com" "$url/health"
+            ! grep --ignore-case "^access-control-allow-origin" other.txt
+          done
+      - name: Show the services' logs if a step failed
+        if: failure()
+        run: |
+          for service in watchlist alerts; do
+            for type in system console; do
+              echo "--- $service, $type log"
+              az containerapp logs show --resource-group "$RESOURCE_GROUP" \
+                --name "${{ vars.PREFIX }}-$service" --type "$type" --tail 50 || true
+            done
+          done

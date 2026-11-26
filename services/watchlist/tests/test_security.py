@@ -7,6 +7,8 @@ from contextlib import closing
 import jwt
 import pytest
 
+from app import create_app
+from app.config import load_config
 from app.db import get_connection
 from app.security import AccessStore
 from app.tokens import issue_token
@@ -159,6 +161,41 @@ def test_registration_errors_are_json_and_then_throttled(client):
 
     good = {"username": "alice", "password": PASSWORD}
     assert client.post("/auth/register", json=good).status_code == 429
+
+
+def test_behind_one_proxy_the_limit_counts_the_address_the_proxy_saw(
+    monkeypatch, prices, database_url
+):
+    # As on Azure: every request comes from the Container Apps proxy, which
+    # adds the browser's address at the end of X-Forwarded-For.
+    monkeypatch.setenv("TRUSTED_PROXIES", "1")
+    client = create_app(load_config(), price_source=prices).test_client()
+    bad = {"username": "a", "password": "short"}
+
+    def register(forwarded_for):
+        return client.post(
+            "/auth/register",
+            json=bad,
+            headers={"X-Forwarded-For": forwarded_for},
+            environ_base={"REMOTE_ADDR": "10.0.0.1"},  # the proxy
+        ).status_code
+
+    for attempt in range(5):
+        # A browser that writes its own X-Forwarded-For gets a new first
+        # entry each time, but the proxy's entry at the end stays the same.
+        assert register(f"192.0.2.{attempt}, 203.0.113.7") == 400
+    assert register("192.0.2.99, 203.0.113.7") == 429
+    # Another browser behind the same proxy has its own count.
+    assert register("203.0.113.8") == 400
+
+
+def test_without_a_trusted_proxy_x_forwarded_for_is_ignored(client):
+    bad = {"username": "a", "password": "short"}
+    for attempt in range(5):
+        headers = {"X-Forwarded-For": f"192.0.2.{attempt}"}
+        assert client.post("/auth/register", json=bad, headers=headers).status_code == 400
+    headers = {"X-Forwarded-For": "192.0.2.99"}
+    assert client.post("/auth/register", json=bad, headers=headers).status_code == 429
 
 
 def test_rate_limit_reservation_is_atomic(app):

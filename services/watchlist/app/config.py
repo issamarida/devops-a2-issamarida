@@ -29,6 +29,7 @@ class Config:
     max_watchlist_items: int = 30
     quote_requests_per_minute: int = 50
     live_symbol_limit: int = 50
+    trusted_proxies: int = 0
 
 
 def read_int(name: str, default: str) -> int:
@@ -81,6 +82,13 @@ def load_config() -> Config:
         if limits[name] <= 0:
             raise ValueError(f"{name} must be greater than 0")
 
+    # How many proxies in front of the service add their caller to the
+    # X-Forwarded-For header. 0 locally, where browsers connect directly. 1 on
+    # Azure, where every request comes through the Container Apps proxy.
+    trusted_proxies = read_int("TRUSTED_PROXIES", "0")
+    if not 0 <= trusted_proxies <= 5:
+        raise ValueError("TRUSTED_PROXIES must be between 0 and 5")
+
     return Config(
         host=os.environ.get("HOST", "0.0.0.0"),
         port=port,
@@ -99,6 +107,7 @@ def load_config() -> Config:
         max_watchlist_items=limits["MAX_WATCHLIST_ITEMS"],
         quote_requests_per_minute=limits["QUOTE_REQUESTS_PER_MINUTE"],
         live_symbol_limit=limits["LIVE_SYMBOL_LIMIT"],
+        trusted_proxies=trusted_proxies,
     )
 
 
