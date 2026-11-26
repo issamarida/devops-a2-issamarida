@@ -15,7 +15,7 @@ from app.alerts.routes import create_alerts_blueprint
 from app.alerts.service import AlertService
 from app.alerts.watchlist_client import RemoteWatchlist, Snapshot, fetch_snapshot
 from app.config import Config
-from app.db import DatabaseError, check_database
+from app.db import DatabaseError, check_database, wait_for_database
 from app.errors import install_error_handlers
 from app.migrations import apply_migrations
 from app.request_log import install_request_log
@@ -29,6 +29,10 @@ MIGRATIONS = Path(__file__).parent.parent / "migrations"
 
 
 def create_app(config: Config) -> Flask:
+    # On Azure the database may be paused. Wait until it answers.
+    tries = wait_for_database(config.database_url)
+    if tries > 1:
+        logger.info("The database answered after %d tries", tries)
     # Bring the schema up to date before the first request. Only new files run.
     apply_migrations(config.database_url, MIGRATIONS)
 

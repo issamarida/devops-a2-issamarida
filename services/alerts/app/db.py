@@ -4,10 +4,14 @@ Every repository call opens its own connection and closes it when done, so
 threads never share one. The connection string comes from DATABASE_URL.
 """
 
+import logging
+import time
 from contextlib import closing
 from urllib.parse import unquote, urlsplit
 
 import pymssql
+
+logger = logging.getLogger(__name__)
 
 # Every error the driver can raise, from a refused login to a broken query.
 DatabaseError = pymssql.Error
@@ -17,6 +21,13 @@ IntegrityError = pymssql.IntegrityError
 # How long to wait for SQL Server to accept the login, and for one query.
 LOGIN_TIMEOUT_SECONDS = 15
 QUERY_TIMEOUT_SECONDS = 15
+
+# How long to wait between tries while the database is starting. Azure SQL
+# serverless pauses after an hour without connections, and the first connection
+# wakes it. Resuming takes up to about a minute, and every try fails meanwhile
+# (error 40613, or a DB-Lib timeout 20002 or 20003 with pymssql). Together with
+# the login timeout of each try, this gives up after at most about four minutes.
+STARTUP_WAITS_SECONDS = (2, 4, 8, 15, 15, 15, 15, 15)
 
 
 def parse_database_url(url) -> dict:
@@ -73,3 +84,27 @@ def check_database(database_url) -> None:
         if cursor.fetchone() is None:
             raise DatabaseError("The health_check row is missing")
         conn.commit()
+
+
+def wait_for_database(database_url, waits=STARTUP_WAITS_SECONDS, sleep=time.sleep) -> int:
+    """Open a connection, trying again while the database starts. Returns the tries it took.
+
+    Every driver error counts as "not ready yet": pymssql can report a stale
+    message from an earlier failure, so the text is not a safe guide. A wrong
+    password fails the same way, only after the last wait, and the logged
+    error names it. The last error is raised, and the service does not start.
+    """
+    for attempt, wait in enumerate((*waits, None), start=1):
+        try:
+            with closing(get_connection(database_url)):
+                return attempt
+        except DatabaseError as error:
+            if wait is None:
+                raise
+            logger.warning(
+                "The database did not answer (try %d: %s). Trying again in %d seconds.",
+                attempt,
+                error,
+                wait,
+            )
+            sleep(wait)
