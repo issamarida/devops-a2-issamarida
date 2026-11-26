@@ -32,9 +32,9 @@ Assignment 2 is in progress. This table is kept honest against the brief.
 | 1a Own Dockerfiles: no `COPY . .`, no secrets in the image, pinned dependencies, non-root user | Done |
 | 1a `docker compose up --build` from a clean clone | Done: database, both services and the UI |
 | 1a Static UI in `ui/`, addresses from `config.js`, served by nginx locally | Done. The pipeline uploads it to the storage static website |
-| 7.5 Cold starts: the services wait for a paused database, the UI handles a sleeping service | Done: retries with backoff at startup, a "starting up" notice and retries in the UI. Not yet seen on Azure |
+| 7.5 Cold starts: the services wait for a paused database, the UI handles a sleeping service | Done: retries with backoff at startup, a "starting up" notice and retries in the UI. The first deploy started both services against new databases. A start against a paused database is still to be recorded |
 | 7 Initial Azure setup | Done on 26 November 2026 with `infra/setup.sh` |
-| 5 and 7 CD: SHA-tagged images in GHCR, Bicep deploy, UI upload, health check | Written in `.github/workflows/cd.yml`. The first deploy runs when it reaches `main` |
+| 5 and 7 CD: SHA-tagged images in GHCR, Bicep deploy, UI upload, health check | Done. First successful run on 26 November 2026: [run 45881877630](https://github.com/issamarida/devops-a2-issamarida/actions/runs/45881877630) |
 | 8a `openapi.yaml` per service | Done, and the tests hold every answer to it |
 | 8a `system.yaml` | Done. Validated against the schema in CI and tested against the code |
 
@@ -368,7 +368,17 @@ Nothing is changed on Azure by hand after the initial setup. A pull request merg
 
 The SQL admin password is not kept anywhere. If it is ever needed, `az sql server update --admin-password` sets a new one.
 
-New GHCR packages are private, so Azure cannot pull them. After the first push each package is made public once in its GitHub settings.
+The course guide warns that new GHCR packages are private, so the first deploy fails until each is made public. Here it did not happen: the images carry the `org.opencontainers.image.source` label, which links each package to this public repository, and both packages could be pulled without signing in from the first push.
+
+### Checked on the live system on 26 November 2026
+
+After the first deploy, against the live addresses:
+
+- Both `/health` answers were 200 with `"db": "ok"` and the merged commit as the version.
+- The browser preflight for a `POST` from the UI's address got `Access-Control-Allow-Origin` for that address and both headers the UI sends.
+- A test account registered, signed in, added AAPL and got a live Finnhub quote. A rule on AAPL was created, which made the alerts service ask the watchlist service across the seam.
+- Five registrations from one machine, each with a different made-up `X-Forwarded-For`, were followed by 429. The proxy handling counts the real address.
+- The resource group holds nine resources: the storage account, the SQL server with its `master` and the two databases, the identity, the environment and the two apps. There is no Log Analytics workspace.
 
 ### Reading the logs on Azure
 
