@@ -57,7 +57,7 @@
       </section>
     </div>
     <aside class="stack" aria-label="Alert tools"><section class="card" id="add-rule"><div class="card-head"><div><h2>Create an alert</h2><p>Choose a price worth checking.</p></div></div><div class="card-body">
-      <form class="add" data-rule-form hidden><label>Ticker<select name="ticker" required></select></label><label>Notify in history when<select name="condition"><option value="above">Price is above</option><option value="below">Price is below</option></select></label><label>Threshold (USD)<input name="threshold" type="number" step="0.01" min="0.01" placeholder="150.00" required></label><button type="submit">+ Create alert</button><p class="hint">One-shot rule. No email or push notifications are sent.</p></form>
+      <form class="add" data-rule-form hidden><label>Ticker<select name="ticker" required></select></label><label>Notify in history when<select name="condition"><option value="above">Price is above</option><option value="below">Price is below</option></select></label><label>Threshold (USD)<input name="threshold" type="number" step="0.01" min="0.01" placeholder="150.00" required></label><button type="submit" disabled>+ Create alert</button><p class="hint">One-shot rule. No email or push notifications are sent.</p></form>
       <div data-no-tickers hidden><p class="hint">Add an asset to your watchlist before creating a price rule.</p><a class="button secondary" href="index.html">Go to watchlist</a></div>
       <!-- The list of tickers comes from the watchlist service. Without it no rule can be created. -->
       <p class="hint" data-tickers-down hidden>The watchlist service is not answering, so a new rule can't be created right now. This page keeps trying.</p>

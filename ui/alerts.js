@@ -182,6 +182,10 @@ async function checkNow() {
 function start() {
   if (!startPage()) return;
   form.addEventListener("submit", createRule);
+  // The button starts disabled in the HTML, so a click before this script has
+  // loaded cannot send the form the browser's own way, which the page's
+  // security policy blocks. It works from here on.
+  form.querySelector("button[type=submit]").disabled = false;
   checkButton.addEventListener("click", checkNow);
   refreshAlerts = watchAlerts(drawAlerts, alertsDown);
   keepFresh(loadTickers, 15000);
