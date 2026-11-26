@@ -8,8 +8,12 @@
 name: CI
 
 on:
+  # On main, cd.yml runs this file first and deploys only if it passes, so a
+  # push to main would otherwise run CI twice.
   push:
+    branches-ignore: [main]
   pull_request:
+  workflow_call:
 
 # The workflow only reads the code. It gets no other access to the repository.
 permissions:
