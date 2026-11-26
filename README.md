@@ -25,17 +25,18 @@ Assignment 2 is in progress. This table is kept honest against the brief.
 | 1a CORS only from the UI's origin, in code | Done. CI checks it on the running containers |
 | 5 CI: lint, tests and coverage per service, against a SQL Server container | Done |
 | 5 CI builds every image | Done. CI also starts the whole system and checks both `/health` answers |
-| 5 CI validates `system.yaml` and each `openapi.yaml` | Half done. Each `openapi.yaml` is validated. `system.yaml` does not exist yet |
+| 5 CI validates `system.yaml` and each `openapi.yaml` | Done. CI also compiles and lints the Bicep file |
 | 1a SQL Server, one database and one login per service, `DATABASE_URL` | Done. SQLite is gone from the code |
 | 4 Versioned migrations, applied in order at startup and recorded | Done: `001_init.sql` in each service |
 | 4 A migration that changes a table holding data, with evidence on Azure | Not yet. It comes after the first deployment, because the database must hold data first |
 | 1a Own Dockerfiles: no `COPY . .`, no secrets in the image, pinned dependencies, non-root user | Done |
 | 1a `docker compose up --build` from a clean clone | Done: database, both services and the UI |
-| 1a Static UI in `ui/`, addresses from `config.js`, served by nginx locally | Done. Not yet on Azure Storage |
-| 7.5 The UI handles a sleeping service in a designed way | Done locally: a "starting up" notice and retries. Not yet seen on Azure |
-| 5 and 7 CD and the Azure deployment | Not yet |
+| 1a Static UI in `ui/`, addresses from `config.js`, served by nginx locally | Done. The pipeline uploads it to the storage static website |
+| 7.5 Cold starts: the services wait for a paused database, the UI handles a sleeping service | Done: retries with backoff at startup, a "starting up" notice and retries in the UI. Not yet seen on Azure |
+| 7 Initial Azure setup | Done on 26 November 2026 with `infra/setup.sh` |
+| 5 and 7 CD: SHA-tagged images in GHCR, Bicep deploy, UI upload, health check | Written in `.github/workflows/cd.yml`. The first deploy runs when it reaches `main` |
 | 8a `openapi.yaml` per service | Done, and the tests hold every answer to it |
-| 8a `system.yaml` | Not yet. It names Azure resources, so it comes with the deployment. `system.schema.json` is in place |
+| 8a `system.yaml` | Done. Validated against the schema in CI and tested against the code |
 
 ## Run it with one command
 
@@ -271,6 +272,7 @@ Every setting is an environment variable. Each service also reads an optional gi
 | `AUTH_WINDOW_SECONDS` | `900` | Length of that window |
 | `MAX_ACCOUNTS` | `50` | Most accounts |
 | `MAX_WATCHLIST_ITEMS` | `30` | Most assets per account |
+| `TRUSTED_PROXIES` | `0` | Proxies in front of the service that add the caller to `X-Forwarded-For`. `1` on Azure, so the sign-in limits count each browser and not the Container Apps proxy |
 
 **alerts**
 
@@ -289,6 +291,8 @@ Every setting is an environment variable. Each service also reads an optional gi
 
 A wrong value stops the service at start with a message that names the variable.
 
+`system.yaml` at the root lists the same variables in the course's format. `tests/test_system_yaml.py` in each service records the variables `load_config()` really reads and fails when the file misses one, gives another default or gives a secret a default.
+
 ## Tests
 
 Each service has its own tests and its own coverage gate. The tests that touch the database run against a real SQL Server, as the service's own login, so they also prove that login has the rights it needs.
@@ -303,7 +307,7 @@ ruff check services
 sh db/test-db.sh down
 ```
 
-Verified on 24 November 2026: watchlist 268 tests and alerts 247 tests, both at 100% statement coverage of their measured modules. Coverage below 70% fails the run. As in Assignment 1 the thin route files and `create_app` are left out of the measure and are exercised through the API tests instead.
+Verified on 26 November 2026: watchlist 281 tests and alerts 256 tests, both at 100% statement coverage of their measured modules. Coverage below 70% fails the run. As in Assignment 1 the thin route files and `create_app` are left out of the measure and are exercised through the API tests instead.
 
 No test touches the internet. Finnhub is mocked. The cross-seam tests in `services/alerts/tests` replace the watchlist service with `StubWatchlist`, a real HTTP server on localhost that checks the service token as the real one does. The tests stop it, slow it down and make it answer nonsense to prove the answers in the table above.
 
@@ -315,7 +319,65 @@ node --test "ui-tests/*.test.mjs"
 
 They replace `fetch` with a fake and cover `ui/api.js`: the address comes from `config.js`, every request has a timeout, a read is retried while a service starts, a write is sent once, a 503 the service wrote itself is shown and not retried, and a refused token returns to sign in. The pages themselves have no automated browser test in the repository. On 24 November 2026 they were driven once in a headless browser against both running services, including each row of the table under "What a user sees when something is down".
 
-CI in `.github/workflows/ci.yml` runs the linter and both test suites on every push and pull request, against a SQL Server container it starts with `db/test-db.sh`. A second job validates each `openapi.yaml` against the OpenAPI specification. A third job runs the UI tests and fails if a file in `ui/` other than `config.js` names a service address. The last job runs `docker compose up --build`, so a failed image build fails the pipeline. It then runs `db/init.sql` a second time, runs `db/check-logins.sh`, checks that both `/health` answers carry the commit, that the UI is served and both addresses in its `config.js` answer, that each service sends the CORS header to the UI's address and to no other, and that neither container runs as root. CI never connects to Azure.
+CI in `.github/workflows/ci.yml` runs the linter and both test suites on every push and pull request, against a SQL Server container it starts with `db/test-db.sh`. A second job validates `system.yaml` against `system.schema.json` and each `openapi.yaml` against the OpenAPI specification, and compiles `infra/main.bicep` with every linter warning counted as a failure. A third job runs the UI tests and fails if a file in `ui/` other than `config.js` names a service address. The last job runs `docker compose up --build`, so a failed image build fails the pipeline. It then runs `db/init.sql` a second time, runs `db/check-logins.sh`, checks that both `/health` answers carry the commit, that the UI is served and both addresses in its `config.js` answer, that each service sends the CORS header to the UI's address and to no other, and that neither container runs as root. CI never connects to Azure.
+
+On `main` the CD workflow runs this whole file first, so its push trigger skips `main` and a merge runs CI once.
+
+## Deployment on Azure
+
+The live app is **https://iaiaridaieu2024ui.z1.web.core.windows.net**.
+
+Everything runs in the Azure for Students subscription, in `swedencentral`, in the resource group `rg-iaiarida-ieu2024`:
+
+| Resource | Name | What it is for |
+|---|---|---|
+| Storage account | `iaiaridaieu2024ui` | Static website serving `ui/`. Its address is the public URL and the only origin the services accept |
+| Container Apps environment | `iaiarida-ieu2024-env` | Consumption plan, no Log Analytics workspace |
+| Container App | `iaiarida-ieu2024-watchlist` | The watchlist service, 0 to 1 replicas, public HTTPS |
+| Container App | `iaiarida-ieu2024-alerts` | The alerts service, 0 to 1 replicas, public HTTPS |
+| SQL server | `iaiarida-ieu2024-sql` | One logical server for both databases |
+| SQL database | `iaiarida-ieu2024-watchlist-db` | Serverless, General Purpose Gen5, 0.5 to 1 vCore, free offer, local backups |
+| SQL database | `iaiarida-ieu2024-alerts-db` | The same, for alerts |
+| Managed identity | `iaiarida-ieu2024-github` | The pipeline signs in as it. Contributor on this resource group only |
+
+Images are in GHCR: `ghcr.io/issamarida/watchlist` and `ghcr.io/issamarida/alerts`, one tag per commit.
+
+### How a deploy works
+
+Nothing is changed on Azure by hand after the initial setup. A pull request merged into `main` starts `.github/workflows/cd.yml`:
+
+1. It runs `ci.yml` on the merged commit. Nothing below runs unless it passes.
+2. It builds both images with `GIT_SHA` set to the commit and pushes them to GHCR tagged with the full SHA.
+3. It signs in to Azure as `iaiarida-ieu2024-github` through OpenID Connect. GitHub signs a token that says "a run on `main` of this repository", and Azure trusts only that. No Azure password or key is stored.
+4. It deploys `infra/main.bicep`: the environment and both Container Apps, pointed at the new images. The database passwords, the token secret and the Finnhub key come from GitHub secrets and become Container Apps secrets.
+5. It writes `ui/config.js` with the two addresses Bicep returns and uploads `ui/` to the `$web` container.
+6. It calls `/health` on both services for up to eight minutes and fails unless each answers 200 with this commit as its version. It also checks that the live UI is served and that each service sends the CORS header to the UI's address and to no other.
+
+### The initial setup
+
+`infra/setup.sh` is the setup as it was run on 26 November 2026. It follows the course's Azure guide and needs `az`, `gh` and Docker. Sign in first with `az login` and `gh auth login`, then run `bash infra/setup.sh` from the repository root. No password is written to a file or printed: each one is made up in the script, handed to Azure and to `gh secret set`, and forgotten when it ends.
+
+1. **Subscription and region.** `az account set --subscription "Azure for Students"`. The script prints the regions the policy allows. This subscription allows `swedencentral`, `spaincentral`, `norwayeast`, `polandcentral` and `switzerlandnorth`. Everything is in `swedencentral`, because the SQL free offer is not available in `spaincentral`.
+2. **Providers and resource group.** `az provider register --wait` for `Microsoft.App`, `Microsoft.OperationalInsights`, `Microsoft.Sql`, `Microsoft.Storage` and `Microsoft.ManagedIdentity`, then `az group create --name rg-iaiarida-ieu2024 --location swedencentral`.
+3. **Storage static website.** `az storage account create` (StorageV2, Standard_LRS, TLS 1.2, no public blob access), then `az storage blob service-properties update --static-website --index-document index.html`.
+4. **SQL.** `az sql server create` with a one-off admin password, the firewall rule `AllowAzureServices` (0.0.0.0), and for each service `az sql db create --edition GeneralPurpose --compute-model Serverless --family Gen5 --min-capacity 0.5 --capacity 1 --backup-storage-redundancy Local --use-free-limit true --free-limit-exhaustion-behavior AutoPause`. The script then opens the firewall to this machine, runs `db/azure-users.sql` in each database with `sqlcmd` from the SQL Server image to make `watchlist_user` and `alerts_user` (contained users with `db_ddladmin`, `db_datareader` and `db_datawriter`), stores their passwords with `gh secret set` and closes the firewall again.
+5. **Container Apps.** Not in the script. The first run of the pipeline creates the environment and both apps from `infra/main.bicep`.
+6. **The pipeline's identity.** `az identity create --name iaiarida-ieu2024-github`, Contributor on the resource group, Storage Blob Data Contributor on the storage account (so it can upload `ui/` without a key), and two federated credentials with issuer `https://token.actions.githubusercontent.com` and audience `api://AzureADTokenExchange`: one for `repo:issamarida/devops-a2-issamarida:ref:refs/heads/main` and one for the same repository written with its numeric IDs.
+7. **GitHub secrets and variables.** Secrets `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `WATCHLIST_DB_PASSWORD`, `ALERTS_DB_PASSWORD`, `TOKEN_SECRET` and `PRICE_API_KEY` (read from the git-ignored `.env`). Variables `PREFIX`, `RESOURCE_GROUP` and `UI_STORAGE`.
+8. **Reader for the professors.** `az role assignment create --role Reader` on the resource group for `amartini@faculty.ie.edu` and `bserra@faculty.ie.edu`.
+
+The SQL admin password is not kept anywhere. If it is ever needed, `az sql server update --admin-password` sets a new one.
+
+New GHCR packages are private, so Azure cannot pull them. After the first push each package is made public once in its GitHub settings.
+
+### Reading the logs on Azure
+
+```sh
+az containerapp logs show --resource-group rg-iaiarida-ieu2024 --name iaiarida-ieu2024-alerts --follow
+az containerapp logs show --resource-group rg-iaiarida-ieu2024 --name iaiarida-ieu2024-alerts --type system
+```
+
+The first shows the service's own lines, one per request. The second shows starts, stops and probe failures.
 
 ## Rules of the domain
 
@@ -331,4 +393,6 @@ CI in `.github/workflows/ci.yml` runs the linter and both test suites on every p
 - `ADR.md`: the decisions, including ADR-6 on the split.
 - `AI_USAGE.md`: every AI session and what it produced.
 - `docs/`: the Assignment 1 report and diagrams. The Assignment 2 report will replace them.
+- `system.yaml`: the whole system in the course's format: services, variables, the call across the seam and the Azure resources.
 - `system.schema.json`: the course's schema for `system.yaml`, unchanged.
+- `infra/`: `setup.sh`, the one-time Azure setup, and `main.bicep`, what every deploy changes.
