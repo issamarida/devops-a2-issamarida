@@ -102,6 +102,10 @@ function start() {
     showError("Your sign in ran out. Sign in again to continue.");
   }
   form.addEventListener("submit", submit);
+  // The button starts disabled in the HTML, so a click before this script has
+  // loaded cannot send the form the browser's own way, which the page's
+  // security policy blocks. It works from here on.
+  form.querySelector("button[type=submit]").disabled = false;
   document.querySelector("[data-switch]").addEventListener("click", () => setMode(!registering));
   wakeServices();
 }

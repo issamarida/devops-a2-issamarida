@@ -131,6 +131,10 @@ function alertsDown() {
 async function start() {
   if (!startPage()) return;
   form.addEventListener("submit", addAsset);
+  // The button starts disabled in the HTML, so a click before this script has
+  // loaded cannot send the form the browser's own way, which the page's
+  // security policy blocks. It works from here on.
+  form.querySelector("button[type=submit]").disabled = false;
   startSearch();
   // Runs by itself from here on, so a slow watchlist does not hold it back.
   refreshAlerts = watchAlerts(drawAlertNumbers, alertsDown);
