@@ -1,0 +1,89 @@
+# yaml-language-server: $schema=./system.schema.json
+#
+# The whole system in one file: both services, every environment variable they
+# read, the call across the seam and where each part runs on Azure.
+# CI checks it against system.schema.json, and a test in each service fails
+# when a variable the code reads is missing here or has another default.
+student: iaiarida.ieu2024
+prefix: iaiarida-ieu2024
+public_url: https://iaiaridaieu2024ui.z1.web.core.windows.net
+ui:
+  path: ui
+  storage_account: iaiaridaieu2024ui
+  calls: [watchlist, alerts]
+azure:
+  resource_group: rg-iaiarida-ieu2024
+  container_apps_environment: iaiarida-ieu2024-env
+  sql_server: iaiarida-ieu2024-sql
+  registry: ghcr.io/issamarida
+
+services:
+  watchlist:
+    description: Accounts and sign in, the tracked assets and their prices from Finnhub. Never calls alerts.
+    path: services/watchlist
+    openapi: services/watchlist/openapi.yaml
+    port_default: 8001
+    health: /health
+    migrations: services/watchlist/migrations
+    env:
+      HOST: { default: 0.0.0.0, description: "Address the server listens on" }
+      PORT: { default: 8001, description: "Port the service listens on" }
+      DATABASE_URL:
+        secret: true
+        description: "Connection string of the watchlist database, as mssql+pymssql://user:password@host:port/database"
+      TOKEN_SECRET:
+        secret: true
+        description: Signs the sign-in tokens and checks the alerts service's tokens. At least 32 characters, the same in both services.
+      PRICE_API_KEY:
+        secret: true
+        description: The Finnhub API key. Without it the service runs, and every price is unavailable.
+      CORS_ORIGINS: { default: "http://localhost:8080", description: "Comma-separated web origins allowed to call the service from a browser. On Azure the UI's address." }
+      GIT_SHA: { default: dev, description: "The commit the image was built from. Set by the image build and reported by /health." }
+      PRICE_CACHE_TTL_SECONDS: { default: 30, description: "How long a quote from Finnhub is reused" }
+      TOKEN_SECONDS: { default: 3600, description: "How long a sign-in token stays valid" }
+      AUTH_ATTEMPTS: { default: 5, description: "Failed sign ins per username, and registrations per address, allowed in each window" }
+      AUTH_WINDOW_SECONDS: { default: 900, description: "Length of the window for AUTH_ATTEMPTS" }
+      MAX_ACCOUNTS: { default: 50, description: "Accounts the service will create in all" }
+      MAX_WATCHLIST_ITEMS: { default: 30, description: "Assets one account may track" }
+      QUOTE_REQUESTS_PER_MINUTE: { default: 50, description: "Calls to the Finnhub REST API per minute, under its free limit of 60" }
+      LIVE_SYMBOL_LIMIT: { default: 50, description: "Tickers streamed live from Finnhub at once, under its free limit" }
+      TRUSTED_PROXIES: { default: 0, description: "Proxies in front of the service that add to X-Forwarded-For. 1 on Azure." }
+    azure:
+      container_app: iaiarida-ieu2024-watchlist
+      sql_database: iaiarida-ieu2024-watchlist-db
+
+  alerts:
+    description: Price rules, their trigger history and the background check. Asks watchlist for watched tickers and prices.
+    path: services/alerts
+    openapi: services/alerts/openapi.yaml
+    port_default: 8002
+    health: /health
+    migrations: services/alerts/migrations
+    env:
+      HOST: { default: 0.0.0.0, description: "Address the server listens on" }
+      PORT: { default: 8002, description: "Port the service listens on" }
+      DATABASE_URL:
+        secret: true
+        description: "Connection string of the alerts database, as mssql+pymssql://user:password@host:port/database"
+      TOKEN_SECRET:
+        secret: true
+        description: Checks the users' sign-in tokens and signs the one-minute token for /internal/snapshot. The same in both services.
+      CORS_ORIGINS: { default: "http://localhost:8080", description: "Comma-separated web origins allowed to call the service from a browser. On Azure the UI's address." }
+      GIT_SHA: { default: dev, description: "The commit the image was built from. Set by the image build and reported by /health." }
+      WATCHLIST_URL: { default: "http://watchlist:8001", description: "Base URL of the watchlist service" }
+      WATCHLIST_TIMEOUT_SECONDS: { default: 3, description: "Timeout for one call to the watchlist service" }
+      POLL_INTERVAL_SECONDS: { default: 15, description: "Seconds between background checks of every active rule. 0 turns the check off." }
+      MAX_ALERT_RULES: { default: 100, description: "Rules one account may have" }
+    calls:
+      - service: watchlist
+        url_env: WATCHLIST_URL
+        endpoints: ["GET /internal/snapshot"]
+        timeout_s: 3
+        on_failure: >-
+          Rules and history still load, open rules show the status unknown with a
+          "watchlist unavailable" notice, a new rule or a manual check is refused
+          with a clear 503 error, and the background check skips that round. No
+          rule fires on a price nobody could confirm.
+    azure:
+      container_app: iaiarida-ieu2024-alerts
+      sql_database: iaiarida-ieu2024-alerts-db
